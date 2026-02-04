@@ -214,9 +214,9 @@ def get_tools_prompt() -> str:
 1. Be CONCISE. No unnecessary explanations.
 2. Act immediately. Don't explain what you're going to do, just do it.
 3. Use tools directly without verbose descriptions.
-4. After task completion, give a brief summary (1-2 sentences max).
+4. After task completion, give a ONE LINE summary only. Don't show file contents.
 5. Respond in Korean.
-6. For file writes, just call the tool. User will confirm.
+6. For file writes, just call the tool. User will confirm. After write, just say "완료" or similar. DON'T show the file content again.
 
 ## Format
 Call tools like this (no extra text around it):
