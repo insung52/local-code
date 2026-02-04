@@ -1,27 +1,17 @@
-# Local Code Assistant - 구현 계획 (v3)
+# Local Code Assistant - 구현 계획 (v4)
 
 > 로컬 LLM 기반 대화형 코드 에이전트
 
 ---
 
-## 요구사항 정의
+## 현재 상태
 
-| 구분 | 내용 |
-|------|------|
-| **서버 (맥북에어 M3 16GB)** | Ollama + FastAPI, LLM 추론 담당 |
-| **클라이언트 (다른 PC)** | Python CLI, 파일 시스템 접근 + 에이전트 |
-| **네트워크** | Tailscale VPN (자동 암호화) |
-| **언어** | Python (서버/클라이언트 통일) |
-| **목표** | Claude Code 같은 대화형 경험 |
-
----
-
-## 하드웨어 제약 및 모델 선택
-
-| 용도 | 모델 | 크기 | 컨텍스트 |
-|------|------|------|----------|
-| **코드 분석 (메인)** | `qwen2.5-coder:14b` | ~9GB | 128K |
-| **임베딩** | `nomic-embed-text` | ~300MB | 8K |
+| Phase | 상태 | 내용 |
+|-------|------|------|
+| Phase 1 | ✅ 완료 | 서버 MVP, API, 인증 |
+| Phase 2 | ✅ 완료 | RAG, 임베딩, 요약 |
+| Phase 3 | ✅ 완료 | 에이전트 루프, ESC 중지, 파일 수정 확인 |
+| Phase 4 | 🔶 진행중 | 고급 기능 |
 
 ---
 
@@ -32,110 +22,92 @@
 ┌─────────────────────┐                   ┌─────────────────────┐
 │  CLI (Python)       │                   │  FastAPI Server     │
 │  ├─ Agent Loop      │   Tailscale       │  ├─ Auth Middleware │
-│  ├─ File Scanner    │ ───────────────►  │  ├─ Ollama Client   │
-│  ├─ Tool Executor   │ ◄─────────────────│  └─ SSE Streaming   │
-│  └─ Context Manager │      (SSE)        │                     │
-└─────────────────────┘                   └─────────────────────┘
+│  ├─ Tool Executor   │ ───────────────►  │  ├─ Ollama Client   │
+│  │   ├─ list_files  │ ◄─────────────────│  └─ SSE Streaming   │
+│  │   ├─ read_file   │      (SSE)        │                     │
+│  │   ├─ search_code │                   └─────────────────────┘
+│  │   └─ write_file  │                            │
+│  └─ Context Manager │                            ▼
+└─────────────────────┘                        Ollama
+                                           qwen2.5-coder:14b
 ```
-
-**핵심 원칙:**
-1. 서버는 파일 시스템을 모른다
-2. 클라이언트가 에이전트 역할 (도구 실행)
-3. 모든 응답은 스트리밍
-4. 사용자 확인 후 코드 수정
 
 ---
 
-## 진행 상황
+## 완료된 기능
 
-### Phase 1 - MVP ✅ 완료
+### Phase 1 - MVP
 - [x] FastAPI 서버 + Ollama 연동
 - [x] SSE 스트리밍
 - [x] API Key 인증
-- [x] 기본 CLI
+- [x] Rate limiting
 
-### Phase 2 - 컨텍스트 관리 ✅ 완료
-- [x] 파일 요약 생성 + SQLite 저장
+### Phase 2 - 컨텍스트 관리
+- [x] 파일 요약 + SQLite 저장
 - [x] 임베딩 + ChromaDB
-- [x] RAG 기반 컨텍스트 구성
+- [x] RAG 검색
 
-### Phase 3 - Claude Code 스타일 🔶 진행중
-- [x] 대화형 모드
-- [x] 설정 자동 프롬프트
-- [x] 간편한 CLI (`llmcode`)
-- [ ] **에이전트 루프** - 스캔 없이 필요한 파일만 읽기
-- [ ] **ESC로 작업 중지**
-- [ ] **코드 수정 시 yes/no 확인**
-- [ ] `/include 경로` - 대화 중 파일 추가
-
-### Phase 4 - 고급 기능 (선택)
-- [ ] Git diff 기반 증분 스캔
-- [ ] 멀티 모델 (요약용 작은 모델, 분석용 큰 모델)
-- [ ] 코드 수정 → 패치 생성 및 적용
-- [ ] Claude API fallback (복잡한 질문용)
+### Phase 3 - Claude Code 스타일
+- [x] 에이전트 루프 (도구 호출 → 실행 → 반복)
+- [x] 도구: list_files, read_file, search_code, write_file
+- [x] ESC로 응답 중지
+- [x] 파일 수정 시 diff + y/n 확인
+- [x] /include, /scan, /clear 명령어
+- [x] 간편 설치 (install.ps1)
+- [x] 간결한 응답 스타일
 
 ---
 
-## Phase 3 상세 설계
+## Phase 4 - 고급 기능
 
-### 3-1. 에이전트 루프 (핵심)
+### 4-1. Git 연동
+- [ ] `git_status` 도구 - 변경된 파일 목록
+- [ ] `git_diff` 도구 - 변경 내용 확인
+- [ ] 증분 스캔 (변경된 파일만 재인덱싱)
 
-LLM이 도구를 요청하면 클라이언트가 실행:
+### 4-2. 코드 실행
+- [ ] `run_command` 도구 - 터미널 명령 실행
+- [ ] 테스트 실행 지원
+- [ ] 빌드 명령 실행
 
-```
-사용자 질문
-    ↓
-LLM 응답 (도구 요청 포함 가능)
-    ↓
-[도구 요청 감지?]
-    ├─ Yes → 도구 실행 → 결과를 LLM에 전달 → 반복
-    └─ No  → 최종 응답 출력
-```
+### 4-3. 개선사항
+- [ ] 대화 히스토리 압축 (토큰 절약)
+- [ ] 응답 캐싱
+- [ ] 에러 재시도 로직
 
-**도구 목록:**
-| 도구 | 설명 |
-|------|------|
-| `list_files(path)` | 디렉토리 파일 목록 |
-| `read_file(path)` | 파일 내용 읽기 |
-| `search(query)` | 코드 검색 (grep) |
-| `write_file(path, content)` | 파일 쓰기 (확인 필요) |
+---
 
-**LLM 응답 형식:**
-```
-일반 텍스트 응답...
+## Phase 5 - 나중에 (선택)
 
-<tool_call>
-{"tool": "read_file", "args": {"path": "src/main.py"}}
-</tool_call>
-```
+### 5-1. 멀티 모델
+- [ ] 요약용 경량 모델 (llama3.2:3b)
+- [ ] 분석용 메인 모델 (qwen2.5-coder:14b)
+- [ ] 모델 자동 선택
 
-### 3-2. ESC로 작업 중지
+### 5-2. Claude API Fallback
+- [ ] 복잡한 질문은 Claude API로
+- [ ] 비용 제한 설정
 
-- 스트리밍 중 ESC 감지
-- 즉시 연결 종료 + "중지됨" 메시지
+---
 
-### 3-3. 코드 수정 확인
+## 사용법
 
-```
-Assistant: src/main.py를 수정하겠습니다.
+```bash
+# 설치
+git clone https://github.com/YOUR_USERNAME/local-code.git
+cd local-code
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 
---- src/main.py (변경 전)
-+++ src/main.py (변경 후)
-@@ -10,3 +10,5 @@
- def main():
--    print("hello")
-+    print("hello world")
+# 새 터미널에서
+cd your-project
+llmcode
 
-적용할까요? [y/n]:
-```
-
-### 3-4. /include 명령어
-
-```
-You: /include src/utils/
-[OK] 3개 파일 컨텍스트에 추가됨
-
-You: 이 유틸 함수들 설명해줘
+# 명령어
+/scan    - 프로젝트 스캔
+/include - 파일 추가
+/clear   - 대화 초기화
+/quit    - 종료
+ESC      - 응답 중지
 ```
 
 ---
@@ -144,16 +116,16 @@ You: 이 유틸 함수들 설명해줘
 
 | 구분 | 기술 |
 |------|------|
-| **서버** | FastAPI, Uvicorn, SSE |
-| **클라이언트** | Click, httpx, ChromaDB, Rich |
-| **네트워크** | Tailscale |
-| **LLM** | Ollama (qwen2.5-coder:14b) |
+| 서버 | FastAPI, Uvicorn, SSE |
+| 클라이언트 | Click, httpx, Rich, ChromaDB |
+| 네트워크 | Tailscale VPN |
+| LLM | Ollama (qwen2.5-coder:14b) |
 
 ---
 
 ## 다음 작업
 
-1. **에이전트 루프 구현** - 도구 호출 파싱 + 실행
-2. **ESC 중지 기능**
-3. **코드 수정 확인 UI**
-4. **/include 명령어**
+Phase 4에서 선택:
+1. **Git 연동** - git_status, git_diff 도구
+2. **코드 실행** - run_command 도구
+3. **멀티 모델** - 요약/분석 모델 분리
