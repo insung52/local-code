@@ -62,6 +62,9 @@ class OllamaClient:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "repeat_penalty": 1.2,
+                "repeat_last_n": 128,
+                "stop": ["\n\n\n", "---", "```\n\n```"],
             },
         }
 
@@ -115,6 +118,8 @@ class OllamaClient:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "repeat_penalty": 1.2,
+                "repeat_last_n": 128,
             },
         }
 
