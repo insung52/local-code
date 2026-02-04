@@ -1,5 +1,7 @@
 import click
 import asyncio
+import sys
+import signal
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
@@ -11,12 +13,22 @@ from config import (
     get_api_key,
     get_default_model,
 )
-from scanner import scan_files, scan_single_file
+from scanner import scan_files
 from api_client import APIClient
-from storage import SummaryStore, VectorStore, ConversationHistory, get_file_hash
-from chunker import chunk_files
+from storage import SummaryStore, VectorStore, ConversationHistory
+from agent import agent_chat, get_system_prompt
 
 console = Console()
+
+# 전역 중지 플래그
+stop_requested = False
+
+
+def signal_handler(signum, frame):
+    """Ctrl+C 핸들러"""
+    global stop_requested
+    stop_requested = True
+    console.print("\n[yellow]Stopping...[/yellow]")
 
 
 def ensure_config() -> tuple[str, str]:
@@ -25,10 +37,10 @@ def ensure_config() -> tuple[str, str]:
     api_key = get_api_key()
 
     if not server_url or not api_key:
-        console.print("[yellow]설정이 필요합니다.[/yellow]\n")
+        console.print("[yellow]Setup required.[/yellow]\n")
 
         server_url = Prompt.ask(
-            "서버 URL",
+            "Server URL",
             default="http://100.104.99.20:8000"
         )
         api_key = Prompt.ask("API Key")
@@ -39,7 +51,7 @@ def ensure_config() -> tuple[str, str]:
         config["default_model"] = "qwen2.5-coder:14b"
         save_global_config(config)
 
-        console.print("[green]설정 저장 완료![/green]\n")
+        console.print("[green]Config saved![/green]\n")
 
     return server_url, api_key
 
@@ -50,41 +62,141 @@ def get_client() -> APIClient:
     return APIClient(server_url, api_key)
 
 
-def check_index(base_path: Path) -> bool:
-    """인덱스 존재 여부 확인"""
+async def run_agent_chat(client: APIClient, base_path: Path):
+    """에이전트 대화 모드"""
+    global stop_requested
+
+    history = ConversationHistory(base_path)
+
+    # 프로젝트 요약 로드 (있으면)
+    summaries = []
     try:
-        vector_store = VectorStore(base_path)
-        return vector_store.get_stats()["total_chunks"] > 0
+        summary_store = SummaryStore(base_path)
+        summaries = summary_store.get_all_summaries()
     except Exception:
-        return False
+        pass
+
+    console.print("[bold]Agent Mode[/bold]")
+    console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+
+    if summaries:
+        console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
+
+    console.print()
+
+    # 시스템 프롬프트
+    system_prompt = get_system_prompt(summaries)
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # 이전 대화 로드
+    prev_messages = history.get_messages(limit=6)
+    messages.extend(prev_messages)
+
+    while True:
+        stop_requested = False
+
+        try:
+            user_input = Prompt.ask("\n[bold cyan]You[/bold cyan]")
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[dim]Bye![/dim]")
+            break
+
+        if not user_input.strip():
+            continue
+
+        cmd = user_input.strip()
+
+        # 명령어 처리
+        if cmd.lower() == "/quit":
+            console.print("[dim]Bye![/dim]")
+            break
+
+        if cmd.lower() == "/clear":
+            history.clear()
+            messages = [{"role": "system", "content": system_prompt}]
+            console.print("[dim]History cleared[/dim]")
+            continue
+
+        if cmd.lower() == "/scan":
+            console.print("[dim]Scanning project...[/dim]")
+            await run_scan(client, base_path)
+            # 요약 다시 로드
+            try:
+                summaries = SummaryStore(base_path).get_all_summaries()
+                system_prompt = get_system_prompt(summaries)
+                messages[0] = {"role": "system", "content": system_prompt}
+            except Exception:
+                pass
+            continue
+
+        if cmd.lower().startswith("/include "):
+            include_path = cmd[9:].strip()
+            try:
+                full_path = base_path / include_path
+                if full_path.is_file():
+                    content = full_path.read_text(encoding='utf-8', errors='replace')
+                    messages.append({
+                        "role": "user",
+                        "content": f"[File added to context: {include_path}]\n```\n{content[:5000]}\n```"
+                    })
+                    console.print(f"[green]Added: {include_path}[/green]")
+                elif full_path.is_dir():
+                    files = list(full_path.rglob("*"))[:10]
+                    file_list = [str(f.relative_to(base_path)) for f in files if f.is_file()]
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Directory added: {include_path}]\nFiles: {', '.join(file_list)}"
+                    })
+                    console.print(f"[green]Added directory: {include_path} ({len(file_list)} files)[/green]")
+                else:
+                    console.print(f"[red]Not found: {include_path}[/red]")
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/red]")
+            continue
+
+        # 사용자 메시지 추가
+        messages.append({"role": "user", "content": user_input})
+        history.add_message("user", user_input)
+
+        console.print("\n[bold green]Assistant[/bold green]")
+
+        # 에이전트 루프 실행
+        response, messages = await agent_chat(client, messages, base_path)
+
+        # 응답 저장
+        if response:
+            history.add_message("assistant", response)
+
+        # 토큰 표시
+        console.print()
 
 
-async def run_scan(client: APIClient, base_path: Path, extensions: list = None):
-    """프로젝트 스캔 실행"""
-    console.print("[dim]프로젝트 스캔 중...[/dim]\n")
+async def run_scan(client: APIClient, base_path: Path):
+    """프로젝트 스캔"""
+    from storage import SummaryStore, VectorStore, get_file_hash
+    from chunker import chunk_files
 
-    all_files = scan_files(base_path, extensions=extensions)
+    all_files = scan_files(base_path)
 
     if not all_files:
-        console.print("[yellow]스캔할 파일이 없습니다.[/yellow]")
+        console.print("[yellow]No files to scan[/yellow]")
         return
 
-    console.print(f"[dim]파일 {len(all_files)}개 발견[/dim]")
+    console.print(f"[dim]Found {len(all_files)} files[/dim]")
 
     summary_store = SummaryStore(base_path)
     vector_store = VectorStore(base_path)
+    model = get_default_model()
 
     # 요약 생성
-    model = get_default_model()
     files_to_summarize = []
-
     for f in all_files:
         content_hash = get_file_hash(f["content"])
         if summary_store.needs_update(f["path"], content_hash):
             files_to_summarize.append((f, content_hash))
 
     if files_to_summarize:
-        console.print(f"[dim]요약 생성: {len(files_to_summarize)}개 파일[/dim]")
+        console.print(f"[dim]Summarizing {len(files_to_summarize)} files...[/dim]")
 
         for i, (file_data, content_hash) in enumerate(files_to_summarize):
             console.print(f"  [{i+1}/{len(files_to_summarize)}] {file_data['path']}", end=" ")
@@ -94,9 +206,6 @@ async def run_scan(client: APIClient, base_path: Path, extensions: list = None):
                 async for chunk in client.summarize_stream(file_data, model):
                     if chunk.get("type") == "token":
                         summary_text += chunk.get("content", "")
-                    elif chunk.get("type") == "error":
-                        console.print(f"[red]오류[/red]")
-                        break
 
                 if summary_text:
                     summary_store.save_summary(
@@ -105,12 +214,12 @@ async def run_scan(client: APIClient, base_path: Path, extensions: list = None):
                         summary_text,
                         file_data.get("language", "text")
                     )
-                    console.print("[green]✓[/green]")
+                    console.print("[green]OK[/green]")
             except Exception as e:
-                console.print(f"[red]오류: {e}[/red]")
+                console.print(f"[red]Error[/red]")
 
-    # 임베딩 생성
-    console.print(f"[dim]임베딩 생성 중...[/dim]")
+    # 임베딩
+    console.print(f"[dim]Creating embeddings...[/dim]")
     chunks = chunk_files(all_files, max_tokens=500, overlap_tokens=50)
 
     batch_size = 20
@@ -129,178 +238,51 @@ async def run_scan(client: APIClient, base_path: Path, extensions: list = None):
                     documents=texts,
                     metadatas=[c["metadata"] for c in batch],
                 )
-        except Exception as e:
-            console.print(f"[red]임베딩 오류: {e}[/red]")
+        except Exception:
+            pass
 
-    console.print(f"[green]스캔 완료![/green] (청크 {len(chunks)}개)\n")
-
-
-async def run_ask(client: APIClient, prompt: str, base_path: Path):
-    """질문 실행"""
-    model = get_default_model()
-
-    # RAG 컨텍스트 구성
-    context_files = []
-
-    try:
-        vector_store = VectorStore(base_path)
-
-        if vector_store.get_stats()["total_chunks"] > 0:
-            # 질문 임베딩
-            result = await client.embed([prompt])
-            query_embedding = result.get("embeddings", [[]])[0]
-
-            if query_embedding:
-                relevant_chunks = vector_store.search(query_embedding, n_results=10)
-
-                if relevant_chunks:
-                    relevant_paths = set(c["metadata"]["path"] for c in relevant_chunks)
-                    all_files = scan_files(base_path)
-                    context_files = [f for f in all_files if f["path"] in relevant_paths]
-                    console.print(f"[dim]관련 파일 {len(context_files)}개 선택[/dim]\n")
-    except Exception:
-        pass
-
-    # RAG 실패시 전체 스캔
-    if not context_files:
-        all_files = scan_files(base_path)
-        context_files = all_files[:10]  # 최대 10개
-        console.print(f"[dim]파일 {len(context_files)}개 분석 중...[/dim]\n")
-
-    # 분석 실행
-    try:
-        async for chunk in client.analyze_stream(context_files, prompt, model):
-            chunk_type = chunk.get("type")
-
-            if chunk_type == "token":
-                console.print(chunk.get("content", ""), end="")
-            elif chunk_type == "error":
-                console.print(f"\n[red]오류: {chunk.get('message')}[/red]")
-                return
-            elif chunk_type == "done":
-                usage = chunk.get("usage", {})
-                console.print(f"\n\n[dim]토큰: {usage.get('total_tokens', '?')}[/dim]")
-    except Exception as e:
-        console.print(f"[red]오류: {e}[/red]")
+    console.print(f"[green]Scan complete![/green] ({len(chunks)} chunks)")
 
 
-async def run_chat(client: APIClient, base_path: Path):
-    """대화형 모드"""
-    model = get_default_model()
-    history = ConversationHistory(base_path)
+async def run_single_query(client: APIClient, prompt: str, base_path: Path):
+    """단일 질문 실행"""
+    # 간단한 에이전트 루프
+    system_prompt = get_system_prompt()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
 
-    # 프로젝트 요약 로드
-    summaries = []
-    try:
-        summary_store = SummaryStore(base_path)
-        summaries = summary_store.get_all_summaries()
-    except Exception:
-        pass
+    console.print("[bold green]Assistant[/bold green]\n")
 
-    console.print("[bold]대화형 모드[/bold]")
-    console.print("[dim]종료: /quit | 초기화: /clear | 스캔: /scan[/dim]")
-
-    if summaries:
-        console.print(f"[dim]프로젝트 컨텍스트: {len(summaries)}개 파일[/dim]")
-    else:
-        console.print("[dim]프로젝트 스캔 안 됨. /scan으로 스캔하세요.[/dim]")
+    response, _ = await agent_chat(client, messages, base_path)
 
     console.print()
-
-    # 시스템 메시지
-    system_content = "당신은 전문 코드 분석가입니다. 한국어로 답변하세요."
-    if summaries:
-        system_content += "\n\n## 프로젝트 파일 요약\n"
-        for s in summaries[:20]:
-            system_content += f"\n### {s['path']}\n{s['summary']}\n"
-
-    while True:
-        try:
-            user_input = Prompt.ask("\n[bold cyan]You[/bold cyan]")
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]종료[/dim]")
-            break
-
-        if not user_input.strip():
-            continue
-
-        cmd = user_input.strip().lower()
-
-        if cmd == "/quit":
-            console.print("[dim]종료[/dim]")
-            break
-
-        if cmd == "/clear":
-            history.clear()
-            console.print("[dim]히스토리 초기화됨[/dim]")
-            continue
-
-        if cmd == "/scan":
-            await run_scan(client, base_path)
-            # 요약 다시 로드
-            try:
-                summaries = summary_store.get_all_summaries()
-                system_content = "당신은 전문 코드 분석가입니다. 한국어로 답변하세요."
-                if summaries:
-                    system_content += "\n\n## 프로젝트 파일 요약\n"
-                    for s in summaries[:20]:
-                        system_content += f"\n### {s['path']}\n{s['summary']}\n"
-            except Exception:
-                pass
-            continue
-
-        # 메시지 구성
-        messages = [{"role": "system", "content": system_content}]
-        messages.extend(history.get_messages(limit=10))
-        messages.append({"role": "user", "content": user_input})
-
-        history.add_message("user", user_input)
-
-        console.print("\n[bold green]Assistant[/bold green]")
-
-        response_text = ""
-        try:
-            async for chunk in client.chat_stream(messages, model=model):
-                chunk_type = chunk.get("type")
-
-                if chunk_type == "token":
-                    content = chunk.get("content", "")
-                    response_text += content
-                    console.print(content, end="")
-                elif chunk_type == "error":
-                    console.print(f"\n[red]오류: {chunk.get('message')}[/red]")
-                    break
-                elif chunk_type == "done":
-                    usage = chunk.get("usage", {})
-                    console.print(f"\n[dim]토큰: {usage.get('total_tokens', '?')}[/dim]")
-
-            if response_text:
-                history.add_message("assistant", response_text)
-        except Exception as e:
-            console.print(f"\n[red]오류: {e}[/red]")
 
 
 @click.command()
 @click.argument("prompt", required=False)
-@click.option("--scan", "-s", is_flag=True, help="프로젝트 스캔 후 시작")
-@click.option("--path", "-p", type=click.Path(exists=True), default=".", help="프로젝트 경로")
-@click.option("--config", "-c", is_flag=True, help="설정 재구성")
-@click.version_option(version="0.1.0")
+@click.option("--scan", "-s", is_flag=True, help="Scan project first")
+@click.option("--path", "-p", type=click.Path(exists=True), default=".", help="Project path")
+@click.option("--config", "-c", is_flag=True, help="Reconfigure")
+@click.version_option(version="0.2.0")
 def cli(prompt: str, scan: bool, path: str, config: bool):
     """
-    Local Code Assistant - LLM 기반 코드 분석 도구
+    Local Code Assistant - AI Code Agent
 
     \b
-    사용법:
-      llmcode              대화형 모드
-      llmcode "질문"       바로 질문하기
-      llmcode -s           스캔 후 대화형 모드
-      llmcode -c           설정 재구성
+    Usage:
+      llmcode              Interactive mode
+      llmcode "question"   Quick question
+      llmcode -s           Scan then start
+      llmcode -c           Reconfigure
     """
-    # 설정 재구성
+    # Ctrl+C 핸들러
+    signal.signal(signal.SIGINT, signal_handler)
+
     if config:
-        console.print("[yellow]설정을 재구성합니다.[/yellow]\n")
-        server_url = Prompt.ask("서버 URL", default=get_server_url() or "http://100.104.99.20:8000")
+        console.print("[yellow]Reconfiguring...[/yellow]\n")
+        server_url = Prompt.ask("Server URL", default=get_server_url() or "http://100.104.99.20:8000")
         api_key = Prompt.ask("API Key", default=get_api_key() or "")
 
         cfg = get_global_config()
@@ -309,7 +291,7 @@ def cli(prompt: str, scan: bool, path: str, config: bool):
         cfg["default_model"] = "qwen2.5-coder:14b"
         save_global_config(cfg)
 
-        console.print("[green]설정 저장 완료![/green]")
+        console.print("[green]Config saved![/green]")
         return
 
     client = get_client()
@@ -319,27 +301,22 @@ def cli(prompt: str, scan: bool, path: str, config: bool):
     try:
         result = asyncio.run(client.health_check())
         if result.get("status") != "ok":
-            console.print("[red]서버 연결 실패[/red]")
+            console.print("[red]Server connection failed[/red]")
             return
     except Exception as e:
-        console.print(f"[red]서버 연결 실패: {e}[/red]")
-        console.print("[dim]서버가 실행 중인지 확인하세요.[/dim]")
+        console.print(f"[red]Server connection failed: {e}[/red]")
         return
 
-    # 스캔 요청 또는 인덱스 없을 때 제안
+    # 스캔 요청
     if scan:
         asyncio.run(run_scan(client, base_path))
-    elif not check_index(base_path) and not prompt:
-        if Confirm.ask("프로젝트가 스캔되지 않았습니다. 스캔할까요?", default=True):
-            asyncio.run(run_scan(client, base_path))
+        console.print()
 
-    # 실행 모드 결정
+    # 실행 모드
     if prompt:
-        # 바로 질문
-        asyncio.run(run_ask(client, prompt, base_path))
+        asyncio.run(run_single_query(client, prompt, base_path))
     else:
-        # 대화형 모드
-        asyncio.run(run_chat(client, base_path))
+        asyncio.run(run_agent_chat(client, base_path))
 
 
 def main():
