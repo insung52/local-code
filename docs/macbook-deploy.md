@@ -302,6 +302,22 @@ launchctl unload ~/Library/LaunchAgents/com.llmcode.server.plist
 - 추가 HTTPS 설정 불필요
 - Tailscale 네트워크 외부에서는 접근 불가 (안전)
 
+ Tailscale 설정 요약:
+
+1. 맥북:
+brew install tailscale
+sudo tailscaled &
+tailscale up
+tailscale ip -4  # IP 확인 (예: 100.64.0.1)
+
+2. Windows 클라이언트:
+- https://tailscale.com/download/windows 에서 설치
+- 같은 계정으로 로그인
+
+3. 클라이언트 설정:
+python cli.py init --server http://100.64.0.1:8000 --api-key your-key
+python cli.py status
+
 ### 추가 보안 (선택)
 - API 키를 강력하게 설정 (`openssl rand -hex 32`)
 - Rate limiting 활성화됨 (기본 60회/분)
