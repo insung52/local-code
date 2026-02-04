@@ -51,26 +51,40 @@ def start_escape_listener():
 
 
 def show_diff(old_content: str, new_content: str, path: str):
-    """파일 변경 diff 표시"""
-    old_lines = old_content.splitlines(keepends=True)
-    new_lines = new_content.splitlines(keepends=True)
+    """파일 변경 diff 표시 (Claude Code 스타일)"""
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
 
-    diff = difflib.unified_diff(
-        old_lines, new_lines,
-        fromfile=f"{path} (before)",
-        tofile=f"{path} (after)",
-        lineterm=""
-    )
+    # 파일 경로 표시
+    console.print(f"\n[bold]{path}[/bold]")
 
-    diff_text = ''.join(diff)
+    # diff 계산
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
 
-    if diff_text:
-        console.print(Panel(
-            Syntax(diff_text, "diff", theme="monokai"),
-            title="[yellow]Changes[/yellow]",
-            border_style="yellow"
-        ))
-    else:
+    has_changes = False
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            # 변경 없는 줄 (컨텍스트로 앞뒤 2줄만)
+            continue
+        elif tag == 'delete':
+            has_changes = True
+            for idx, line in enumerate(old_lines[i1:i2], start=i1 + 1):
+                console.print(f"[dim]{idx:4}[/dim] [red]- {line}[/red]")
+        elif tag == 'insert':
+            has_changes = True
+            for idx, line in enumerate(new_lines[j1:j2], start=j1 + 1):
+                console.print(f"[dim]{idx:4}[/dim] [green]+ {line}[/green]")
+        elif tag == 'replace':
+            has_changes = True
+            # 먼저 삭제된 줄들
+            for idx, line in enumerate(old_lines[i1:i2], start=i1 + 1):
+                console.print(f"[dim]{idx:4}[/dim] [red]- {line}[/red]")
+            # 그 다음 추가된 줄들
+            for idx, line in enumerate(new_lines[j1:j2], start=j1 + 1):
+                console.print(f"[dim]{idx:4}[/dim] [green]+ {line}[/green]")
+
+    if not has_changes:
         console.print("[dim]No changes[/dim]")
 
 
