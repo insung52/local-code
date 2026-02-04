@@ -150,40 +150,62 @@ curl http://localhost:8000/api/v1/models \
 
 ---
 
-## 8. 공유기 포트포워딩
+## 8. Tailscale 설정 (보안 네트워크)
 
-### 8-1. 맥북 내부 IP 확인
+Tailscale은 WireGuard 기반 VPN으로, 포트포워딩 없이 안전하게 연결 가능.
 
-```bash
-# WiFi IP 확인
-ipconfig getifaddr en0
-# 예: 192.168.0.10
-```
-
-### 8-2. 공유기 설정
-
-1. 공유기 관리 페이지 접속 (보통 `192.168.0.1` 또는 `192.168.1.1`)
-2. 포트포워딩 / 가상서버 메뉴 찾기
-3. 규칙 추가:
-   - 외부 포트: `8000` (또는 원하는 포트)
-   - 내부 IP: `192.168.0.10` (맥북 IP)
-   - 내부 포트: `8000`
-   - 프로토콜: TCP
-
-### 8-3. 외부 IP 확인
+### 8-1. 맥북에 Tailscale 설치
 
 ```bash
-curl ifconfig.me
-# 예: 123.456.789.10
+# Homebrew로 설치
+brew install tailscale
+
+# Tailscale 시작
+sudo tailscaled &
+
+# 로그인 (브라우저 열림)
+tailscale up
 ```
 
-### 8-4. DDNS 설정 (선택, 권장)
+또는 [Tailscale 공식 사이트](https://tailscale.com/download/mac)에서 앱 다운로드.
 
-IP가 변경될 수 있으므로 DDNS 사용 권장:
-- [No-IP](https://www.noip.com/) (무료)
-- [DuckDNS](https://www.duckdns.org/) (무료)
+### 8-2. 클라이언트 PC에 Tailscale 설치
 
-예: `your-server.duckdns.org`
+**Windows:**
+1. https://tailscale.com/download/windows 에서 다운로드
+2. 설치 후 같은 계정으로 로그인
+
+**Linux:**
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+### 8-3. 맥북 Tailscale IP 확인
+
+```bash
+tailscale ip -4
+# 예: 100.64.0.1
+```
+
+또는 Tailscale 앱/웹 대시보드에서 확인.
+
+### 8-4. 연결 테스트
+
+클라이언트 PC에서:
+```bash
+# 맥북 Tailscale IP로 ping
+ping 100.64.0.1
+
+# 서버 접속 테스트
+curl http://100.64.0.1:8000/api/v1/health -H "X-API-Key: your-key"
+```
+
+### 장점
+- 포트포워딩 필요 없음
+- 자동 암호화 (WireGuard)
+- IP 고정 (재부팅해도 동일)
+- 무료 (개인 사용)
 
 ---
 
@@ -194,14 +216,9 @@ IP가 변경될 수 있으므로 DDNS 사용 권장:
 ```bash
 cd client
 
-# 서버 주소로 초기화
+# Tailscale IP로 초기화 (맥북의 Tailscale IP 사용)
 python cli.py init \
-  --server http://your-external-ip:8000 \
-  --api-key your-secure-api-key-here
-
-# 또는 DDNS 사용 시
-python cli.py init \
-  --server http://your-server.duckdns.org:8000 \
+  --server http://100.64.0.1:8000 \
   --api-key your-secure-api-key-here
 ```
 
@@ -209,6 +226,8 @@ python cli.py init \
 ```bash
 python cli.py status
 ```
+
+**참고:** `100.64.0.1`은 예시. 실제 맥북의 Tailscale IP로 교체.
 
 ---
 
@@ -276,50 +295,17 @@ launchctl unload ~/Library/LaunchAgents/com.llmcode.server.plist
 
 ---
 
-## 11. HTTPS 설정 (선택, 보안 강화)
+## 11. 보안 참고사항
 
-외부 노출 시 HTTPS 권장.
+### Tailscale 사용 시
+- Tailscale은 WireGuard로 **자동 암호화**됨
+- 추가 HTTPS 설정 불필요
+- Tailscale 네트워크 외부에서는 접근 불가 (안전)
 
-### 방법 1: Cloudflare Tunnel (무료, 권장)
-
-```bash
-# cloudflared 설치
-brew install cloudflared
-
-# 로그인
-cloudflared tunnel login
-
-# 터널 생성
-cloudflared tunnel create llmcode
-
-# 설정 파일 생성
-# ~/.cloudflared/config.yml
-```
-
-**~/.cloudflared/config.yml:**
-```yaml
-tunnel: YOUR_TUNNEL_ID
-credentials-file: /Users/YOUR_USERNAME/.cloudflared/YOUR_TUNNEL_ID.json
-
-ingress:
-  - hostname: llmcode.your-domain.com
-    service: http://localhost:8000
-  - service: http_status:404
-```
-
-```bash
-# 터널 실행
-cloudflared tunnel run llmcode
-```
-
-### 방법 2: Self-signed 인증서
-
-```bash
-# 인증서 생성
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
-
-# main.py 수정하여 SSL 적용 (uvicorn 옵션)
-```
+### 추가 보안 (선택)
+- API 키를 강력하게 설정 (`openssl rand -hex 32`)
+- Rate limiting 활성화됨 (기본 60회/분)
+- 필요시 `.env`에서 `RATE_LIMIT` 조정
 
 ---
 
@@ -347,23 +333,27 @@ vm_stat
 # .env에서 DEFAULT_CHAT_MODEL=llama3.2:3b
 ```
 
-### 포트포워딩 안 됨
-- 공유기 방화벽 확인
-- ISP에서 포트 차단 여부 확인
-- 다른 포트 시도 (8080, 8443 등)
+### Tailscale 연결 안 됨
+```bash
+# Tailscale 상태 확인
+tailscale status
+
+# 재연결
+tailscale down && tailscale up
+```
+- 양쪽 기기가 같은 Tailscale 계정인지 확인
+- 방화벽에서 Tailscale 허용 확인
 
 ---
 
 ## 체크리스트
 
 - [ ] Ollama 설치 및 실행
-- [ ] 모델 다운로드 (qwen2.5-coder:14b, nomic-embed-text)
-- [ ] 서버 코드 복사
-- [ ] Python 가상환경 설정
+- [ ] 모델 다운로드 (`qwen2.5-coder:14b`, `nomic-embed-text`)
+- [ ] GitHub에서 코드 clone
+- [ ] Python 가상환경 설정 + 의존성 설치
 - [ ] .env 파일 설정 (API 키!)
 - [ ] 서버 실행 및 로컬 테스트
-- [ ] 포트포워딩 설정
-- [ ] 클라이언트에서 연결 테스트
-- [ ] (선택) DDNS 설정
-- [ ] (선택) 백그라운드 실행 설정
-- [ ] (선택) HTTPS 설정
+- [ ] Tailscale 설치 (맥북 + 클라이언트 PC)
+- [ ] 클라이언트에서 Tailscale IP로 연결 테스트
+- [ ] (선택) 백그라운드 실행 설정 (tmux/launchd)
