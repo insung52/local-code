@@ -271,3 +271,17 @@ llmcode scan --diff
 ---
 
 바로 시작할까?
+
+
+$body = @{
+    files = @(
+        @{
+            path = "test.py"
+            content = "def add(a, b):`n    return a + b"
+            language = "python"
+        }
+    )
+    prompt = "explain this function"
+} | ConvertTo-Json -Depth 3
+
+Invoke-RestMethod -Uri "http://localhost:8000/api/v1/analyze" -Method POST -Headers @{"X-API-Key"="test-key"; "Content-Type"="application/json"} -Body $body
