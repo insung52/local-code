@@ -43,7 +43,7 @@ def cli():
 @cli.command()
 @click.option("--server", "-s", required=True, help="서버 URL (예: http://localhost:8000)")
 @click.option("--api-key", "-k", required=True, help="API 키")
-@click.option("--model", "-m", default="deepseek-coder-v2:16b", help="기본 모델")
+@click.option("--model", "-m", default="qwen2.5-coder:14b", help="기본 모델")
 def init(server: str, api_key: str, model: str):
     """서버 설정 초기화"""
     config = get_global_config()

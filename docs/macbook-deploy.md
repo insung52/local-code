@@ -29,7 +29,7 @@ ollama serve
 
 ```bash
 # 메인 모델 (코드 분석용) - 약 9GB
-ollama pull deepseek-coder-v2:16b
+ollama pull qwen2.5-coder:14b
 
 # 임베딩 모델 - 약 300MB
 ollama pull nomic-embed-text
@@ -107,7 +107,7 @@ API_KEYS=your-secure-api-key-here
 OLLAMA_BASE_URL=http://localhost:11434
 RATE_LIMIT=60/minute
 
-DEFAULT_CHAT_MODEL=deepseek-coder-v2:16b
+DEFAULT_CHAT_MODEL=qwen2.5-coder:14b
 DEFAULT_EMBED_MODEL=nomic-embed-text
 ```
 
@@ -336,7 +336,7 @@ brew services restart ollama
 
 ### 모델 로딩 느림
 - 첫 요청 시 모델 로딩에 시간 소요 (정상)
-- M3 16GB에서 deepseek-coder-v2:16b는 약 30초~1분 로딩
+- M3 16GB에서 qwen2.5-coder:14b는 약 30초~1분 로딩
 
 ### 메모리 부족
 ```bash
@@ -357,7 +357,7 @@ vm_stat
 ## 체크리스트
 
 - [ ] Ollama 설치 및 실행
-- [ ] 모델 다운로드 (deepseek-coder-v2:16b, nomic-embed-text)
+- [ ] 모델 다운로드 (qwen2.5-coder:14b, nomic-embed-text)
 - [ ] 서버 코드 복사
 - [ ] Python 가상환경 설정
 - [ ] .env 파일 설정 (API 키!)

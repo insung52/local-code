@@ -22,7 +22,7 @@
 
 | 용도 | 모델 | 크기 | 컨텍스트 | 비고 |
 |------|------|------|----------|------|
-| **코드 분석 (메인)** | `deepseek-coder-v2:16b` | ~9GB | 128K | 코드 특화, 긴 컨텍스트 |
+| **코드 분석 (메인)** | `qwen2.5-coder:14b` | ~9GB | 128K | 코드 특화, 긴 컨텍스트 |
 | **코드 분석 (대안)** | `codellama:13b` | ~7GB | 16K | 안정적 |
 | **가벼운 요약** | `llama3.2:3b` | ~2GB | 128K | 빠른 응답 |
 | **임베딩** | `nomic-embed-text` | ~300MB | 8K | 벡터 검색용 |
@@ -110,7 +110,7 @@ X-API-Key: your-secret-key
     {"path": "src/renderer.cpp", "content": "..."}
   ],
   "prompt": "이 코드의 병목 지점을 찾아줘",
-  "model": "deepseek-coder-v2:16b",
+  "model": "qwen2.5-coder:14b",
   "stream": true
 }
 
