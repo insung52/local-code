@@ -1,0 +1,5 @@
+click==8.1.7
+httpx==0.26.0
+rich==13.7.0
+python-dotenv==1.0.0
+chromadb==0.4.22
