@@ -45,35 +45,26 @@ ollama list
 
 ---
 
-## 3. 서버 코드 복사
+## 3. 코드 가져오기
 
 ```bash
-# 서버 폴더만 맥북으로 복사
-# USB, AirDrop, git clone 등 원하는 방법 사용
-
-# 예시: 홈 디렉토리에 배치
 cd ~
 mkdir -p projects
 cd projects
-# 여기에 server 폴더 복사
+
+# GitHub에서 clone
+git clone https://github.com/YOUR_USERNAME/local-code.git
+cd local-code
 ```
 
 **디렉토리 구조:**
 ```
-~/projects/local-code-server/
-├── main.py
-├── config.py
-├── auth.py
-├── ollama_client.py
-├── routes/
-│   ├── __init__.py
-│   ├── health.py
-│   ├── analyze.py
-│   ├── embed.py
-│   └── chat.py
-├── requirements.txt
-├── .env.example
-└── .env
+~/projects/local-code/
+├── server/          # 서버 (맥북에서 실행)
+├── client/          # 클라이언트 (다른 PC에서 실행)
+├── docs/
+├── api-spec.md
+└── plan.md
 ```
 
 ---
@@ -85,7 +76,7 @@ cd projects
 python3 --version
 
 # 가상환경 생성
-cd ~/projects/local-code-server
+cd ~/projects/local-code/server
 python3 -m venv venv
 source venv/bin/activate
 
@@ -131,7 +122,7 @@ openssl rand -hex 32
 ## 6. 서버 실행
 
 ```bash
-cd ~/projects/local-code-server
+cd ~/projects/local-code/server
 source venv/bin/activate
 python main.py
 ```
@@ -233,7 +224,7 @@ brew install tmux
 tmux new -s llmcode
 
 # 서버 실행
-cd ~/projects/local-code-server
+cd ~/projects/local-code/server
 source venv/bin/activate
 python main.py
 
