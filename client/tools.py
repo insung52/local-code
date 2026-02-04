@@ -239,14 +239,42 @@ You can include multiple tool calls, but put each on its own line.
 
 def parse_tool_calls(response: str) -> list[dict]:
     """응답에서 도구 호출 파싱"""
-    pattern = r'<tool_call>\s*(\{[^}]+\})\s*</tool_call>'
-    matches = re.findall(pattern, response, re.DOTALL)
-
     tool_calls = []
-    for match in matches:
+
+    # 패턴 1: <tool_call>...</tool_call>
+    pattern1 = r'<tool_call>\s*(\{[^}]+\})\s*</tool_call>'
+    matches1 = re.findall(pattern1, response, re.DOTALL)
+
+    for match in matches1:
         try:
             call = json.loads(match)
             if "tool" in call:
+                tool_calls.append(call)
+        except json.JSONDecodeError:
+            continue
+
+    # 패턴 2: ```json ... ``` 코드 블록 안에 tool/args
+    pattern2 = r'```(?:json)?\s*(\{[^`]*"tool"[^`]*\})\s*```'
+    matches2 = re.findall(pattern2, response, re.DOTALL)
+
+    for match in matches2:
+        try:
+            call = json.loads(match)
+            if "tool" in call:
+                tool_calls.append(call)
+        except json.JSONDecodeError:
+            continue
+
+    # 패턴 3: 그냥 {"tool": ...} 형태 (줄 단위)
+    pattern3 = r'\{\s*"tool"\s*:\s*"(\w+)"\s*,\s*"args"\s*:\s*(\{[^}]*\})\s*\}'
+    matches3 = re.findall(pattern3, response)
+
+    for tool_name, args_str in matches3:
+        try:
+            args = json.loads(args_str)
+            call = {"tool": tool_name, "args": args}
+            # 중복 체크
+            if call not in tool_calls:
                 tool_calls.append(call)
         except json.JSONDecodeError:
             continue

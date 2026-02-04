@@ -1,5 +1,7 @@
 import asyncio
 import json
+import sys
+import threading
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -14,6 +16,38 @@ from config import get_default_model
 console = Console()
 
 MAX_ITERATIONS = 10  # 최대 도구 호출 반복 횟수
+
+# ESC 감지용 전역 변수
+stop_generation = False
+
+
+def check_escape_key():
+    """ESC 키 감지 (Windows)"""
+    global stop_generation
+    try:
+        import msvcrt
+        while True:
+            if msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key == b'\x1b':  # ESC
+                    stop_generation = True
+                    return
+            if stop_generation:
+                return
+            import time
+            time.sleep(0.05)
+    except ImportError:
+        # Unix 계열
+        pass
+
+
+def start_escape_listener():
+    """ESC 리스너 시작"""
+    global stop_generation
+    stop_generation = False
+    thread = threading.Thread(target=check_escape_key, daemon=True)
+    thread.start()
+    return thread
 
 
 def show_diff(old_content: str, new_content: str, path: str):
@@ -51,17 +85,28 @@ async def agent_chat(
     Returns:
         (최종 응답 텍스트, 업데이트된 메시지 리스트)
     """
+    global stop_generation
     model = get_default_model()
     iteration = 0
 
     while iteration < MAX_ITERATIONS:
         iteration += 1
 
+        # ESC 리스너 시작
+        start_escape_listener()
+
         # LLM 호출
         full_response = ""
+        stopped = False
 
         try:
             async for chunk in client.chat_stream(messages, model=model):
+                # ESC 체크
+                if stop_generation:
+                    stopped = True
+                    console.print("\n[yellow](Stopped)[/yellow]")
+                    break
+
                 chunk_type = chunk.get("type")
 
                 if chunk_type == "token":
@@ -71,6 +116,7 @@ async def agent_chat(
 
                 elif chunk_type == "error":
                     console.print(f"\n[red]Error: {chunk.get('message')}[/red]")
+                    stop_generation = True
                     return full_response, messages
 
                 elif chunk_type == "done":
@@ -78,6 +124,12 @@ async def agent_chat(
 
         except Exception as e:
             console.print(f"\n[red]Error: {e}[/red]")
+            stop_generation = True
+            return full_response, messages
+
+        # 중지됨
+        stop_generation = True  # 리스너 종료
+        if stopped:
             return full_response, messages
 
         # 도구 호출 파싱
