@@ -14,6 +14,31 @@ from pathlib import Path
 
 # 설치 경로
 INSTALL_DIR = Path(os.environ.get("LOCALAPPDATA", "")) / "llmcode"
+
+
+def get_python_executable():
+    """시스템 Python 경로 찾기 (PyInstaller exe가 아닌)"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller로 빌드된 경우 - 시스템 Python 찾기
+        possible_paths = [
+            shutil.which("python"),
+            shutil.which("python3"),
+            r"C:\Python310\python.exe",
+            r"C:\Python311\python.exe",
+            r"C:\Python312\python.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python310\python.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
+            r"C:\Program Files\Python310\python.exe",
+            r"C:\Program Files\Python311\python.exe",
+            r"C:\Program Files\Python312\python.exe",
+        ]
+        for path in possible_paths:
+            if path and Path(path).exists():
+                return path
+        return "python"  # fallback
+    else:
+        return sys.executable
 CLIENT_FILES = [
     "cli.py",
     "api_client.py",
@@ -158,16 +183,22 @@ def add_to_path():
 def install_dependencies():
     """Python 패키지 설치"""
     print("[4/4] Installing dependencies...")
+    print("  (This may take a few minutes for chromadb...)")
+    print()
+
+    python_exe = get_python_executable()
+    print(f"  Using Python: {python_exe}")
 
     req_file = INSTALL_DIR / "requirements.txt"
 
     if req_file.exists():
         try:
+            # 실시간 출력 표시
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q", "-r", str(req_file)],
-                check=True,
-                capture_output=True
+                [python_exe, "-m", "pip", "install", "-r", str(req_file)],
+                check=True
             )
+            print()
             print("  + Dependencies installed")
         except subprocess.CalledProcessError as e:
             print(f"  ! pip install failed")
@@ -177,10 +208,10 @@ def install_dependencies():
         packages = ["click", "httpx", "rich", "chromadb"]
         try:
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-q"] + packages,
-                check=True,
-                capture_output=True
+                [python_exe, "-m", "pip", "install"] + packages,
+                check=True
             )
+            print()
             print("  + Dependencies installed")
         except:
             print(f"  ! pip install failed")
