@@ -199,6 +199,48 @@ async def agent_chat(
                     result = {"cancelled": True, "message": "User cancelled"}
                     console.print("[dim]Cancelled[/dim]")
 
+            # run_command 는 확인 필요
+            elif tool_name == "run_command" and result.get("requires_confirmation"):
+                console.print(f"\n[bold]Command:[/bold] {result.get('command')}")
+                console.print(f"[dim]Working dir: {result.get('path')}[/dim]")
+
+                if Confirm.ask("\n[yellow]Run this command?[/yellow]", default=False):
+                    # 실제 명령 실행
+                    try:
+                        import subprocess
+                        proc = subprocess.run(
+                            result["command"],
+                            cwd=result["path"],
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=result.get("timeout", 30)
+                        )
+                        output = proc.stdout + proc.stderr
+                        # 출력이 너무 길면 자르기
+                        if len(output) > 5000:
+                            output = output[:5000] + "\n... (truncated)"
+                        result = {
+                            "success": proc.returncode == 0,
+                            "returncode": proc.returncode,
+                            "output": output
+                        }
+                        if proc.returncode == 0:
+                            console.print("[green]Command completed![/green]")
+                        else:
+                            console.print(f"[yellow]Command exited with code {proc.returncode}[/yellow]")
+                        if output.strip():
+                            console.print(f"[dim]{output[:500]}[/dim]")
+                    except subprocess.TimeoutExpired:
+                        result = {"error": "Command timed out"}
+                        console.print("[red]Command timed out[/red]")
+                    except Exception as e:
+                        result = {"error": str(e)}
+                        console.print(f"[red]Failed: {e}[/red]")
+                else:
+                    result = {"cancelled": True, "message": "User cancelled"}
+                    console.print("[dim]Cancelled[/dim]")
+
             tool_results.append({
                 "tool": tool_name,
                 "result": result

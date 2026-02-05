@@ -164,6 +164,112 @@ def write_file(path: str, content: str) -> dict:
         return {"error": str(e)}
 
 
+def git_status(path: str = ".") -> dict:
+    """Git 상태 확인"""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            return {"error": result.stderr or "Not a git repository"}
+
+        lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
+
+        changes = []
+        for line in lines:
+            if len(line) >= 3:
+                status = line[:2].strip()
+                file_path = line[3:]
+                changes.append({"status": status, "file": file_path})
+
+        # 현재 브랜치
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+
+        return {
+            "branch": branch,
+            "changes": changes,
+            "total_changes": len(changes),
+            "clean": len(changes) == 0
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "Git command timed out"}
+    except FileNotFoundError:
+        return {"error": "Git not installed"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def git_diff(path: str = ".", file: str = None, staged: bool = False) -> dict:
+    """Git diff 확인"""
+    try:
+        cmd = ["git", "diff"]
+        if staged:
+            cmd.append("--staged")
+        if file:
+            cmd.append("--")
+            cmd.append(file)
+
+        result = subprocess.run(
+            cmd,
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            return {"error": result.stderr or "Git diff failed"}
+
+        diff_output = result.stdout
+
+        # 너무 길면 자르기
+        if len(diff_output) > 10000:
+            diff_output = diff_output[:10000] + "\n... (truncated)"
+
+        return {
+            "diff": diff_output,
+            "staged": staged,
+            "file": file,
+            "has_changes": len(diff_output.strip()) > 0
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "Git command timed out"}
+    except FileNotFoundError:
+        return {"error": "Git not installed"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def run_command(command: str, path: str = ".", timeout: int = 30) -> dict:
+    """터미널 명령 실행 (확인 필요)"""
+    # 위험한 명령 차단
+    dangerous = ["rm -rf", "del /", "format", "mkfs", ":(){", "fork bomb"]
+    cmd_lower = command.lower()
+    for d in dangerous:
+        if d in cmd_lower:
+            return {"error": f"Dangerous command blocked: {d}"}
+
+    return {
+        "action": "run_command",
+        "command": command,
+        "path": path,
+        "timeout": timeout,
+        "requires_confirmation": True,
+    }
+
+
 # 도구 레지스트리
 TOOLS = {
     "list_files": {
@@ -197,6 +303,30 @@ TOOLS = {
             "content": "Content to write",
         }
     },
+    "git_status": {
+        "fn": git_status,
+        "description": "Check git status (branch, changed files)",
+        "parameters": {
+            "path": "Repository path (default: current directory)",
+        }
+    },
+    "git_diff": {
+        "fn": git_diff,
+        "description": "Show git diff",
+        "parameters": {
+            "path": "Repository path",
+            "file": "Specific file (optional)",
+            "staged": "Show staged changes (default: false)",
+        }
+    },
+    "run_command": {
+        "fn": run_command,
+        "description": "Run terminal command (requires user confirmation)",
+        "parameters": {
+            "command": "Command to run",
+            "path": "Working directory",
+        }
+    },
 }
 
 
@@ -209,6 +339,9 @@ def get_tools_prompt() -> str:
 - read_file: {"tool": "read_file", "args": {"path": "file.py"}}
 - search_code: {"tool": "search_code", "args": {"query": "keyword"}}
 - write_file: {"tool": "write_file", "args": {"path": "file.py", "content": "..."}}
+- git_status: {"tool": "git_status", "args": {"path": "."}}
+- git_diff: {"tool": "git_diff", "args": {"path": ".", "file": "optional.py"}}
+- run_command: {"tool": "run_command", "args": {"command": "npm test"}}
 
 ## Rules
 1. Be CONCISE. No unnecessary explanations.
@@ -216,7 +349,7 @@ def get_tools_prompt() -> str:
 3. Use tools directly without verbose descriptions.
 4. After task completion, give a ONE LINE summary only. Don't show file contents.
 5. Respond in Korean.
-6. For file writes, just call the tool. User will confirm. After write, just say "완료" or similar. DON'T show the file content again.
+6. For file writes and commands, just call the tool. User will confirm.
 
 ## Format
 Call tools like this (no extra text around it):
