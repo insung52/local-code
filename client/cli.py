@@ -20,7 +20,7 @@ from api_client import APIClient
 from storage import SummaryStore, VectorStore, ConversationHistory
 from agent import agent_chat, get_system_prompt
 from version import VERSION
-from claude_client import ClaudeClient
+from claude_client import ClaudeClient, test_cli_available
 
 console = Console()
 
@@ -156,9 +156,16 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
     claude_enabled = False
     claude_client = None
     config = get_global_config()
+    claude_mode = config.get("claude_mode", "cli")
     claude_api_key = config.get("claude_api_key", "")
-    if claude_api_key:
-        claude_client = ClaudeClient(claude_api_key)
+
+    # Claude 클라이언트 초기화
+    if claude_mode == "cli":
+        # CLI 모드는 API 키 불필요
+        if test_cli_available():
+            claude_client = ClaudeClient(mode="cli")
+    elif claude_mode == "api" and claude_api_key:
+        claude_client = ClaudeClient(mode="api", api_key=claude_api_key)
 
     # 프로젝트 요약 로드 (있으면)
     summaries = []
@@ -262,14 +269,18 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
             continue
 
         if cmd.lower() == "/claude on":
-            if not claude_api_key:
-                console.print("[red]Claude API key not set. Run: llmcode --config[/red]")
+            if not claude_client:
+                if claude_mode == "cli":
+                    console.print("[red]Claude CLI not available. Install Claude Code first.[/red]")
+                else:
+                    console.print("[red]Claude API key not set. Run: llmcode --config[/red]")
             else:
                 claude_enabled = True
                 # 시스템 프롬프트 업데이트
                 system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=True)
                 messages[0] = {"role": "system", "content": system_prompt}
-                console.print("[green]Claude API enabled[/green]")
+                mode_str = "CLI" if claude_mode == "cli" else "API"
+                console.print(f"[green]Claude enabled ({mode_str} mode)[/green]")
             continue
 
         if cmd.lower() == "/claude off":
@@ -281,8 +292,12 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
 
         if cmd.lower() == "/claude":
             status = "[green]ON[/green]" if claude_enabled else "[dim]OFF[/dim]"
-            key_status = "[green]configured[/green]" if claude_api_key else "[red]not set[/red]"
-            console.print(f"Claude API: {status} (key: {key_status})")
+            mode_str = claude_mode.upper()
+            if claude_mode == "cli":
+                avail = "[green]available[/green]" if claude_client else "[red]not found[/red]"
+            else:
+                avail = "[green]configured[/green]" if claude_api_key else "[red]no key[/red]"
+            console.print(f"Claude: {status} | Mode: {mode_str} ({avail})")
             console.print("[dim]Usage: /claude on, /claude off[/dim]")
             continue
 
@@ -485,20 +500,49 @@ def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, u
         api_key = Prompt.ask("API Key (local server)", default=get_api_key() or "")
 
         cfg = get_global_config()
-        claude_key = cfg.get("claude_api_key", "")
-        claude_api_key = Prompt.ask("Claude API Key (optional, press Enter to skip)", default=claude_key or "")
+
+        # Claude 설정
+        console.print("\n[bold]Claude Settings[/bold]")
+        current_mode = cfg.get("claude_mode", "cli")
+
+        # CLI 사용 가능 여부 체크
+        cli_available = test_cli_available()
+        if cli_available:
+            console.print("[green]✓ Claude CLI available[/green]")
+        else:
+            console.print("[yellow]✗ Claude CLI not found (install Claude Code first)[/yellow]")
+
+        console.print("\n[dim]1. CLI mode - uses 'claude -p' command (Pro subscription)[/dim]")
+        console.print("[dim]2. API mode - uses Anthropic API (requires credits)[/dim]")
+
+        mode_choice = Prompt.ask(
+            "Claude mode",
+            choices=["1", "2", "skip"],
+            default="1" if current_mode == "cli" else "2"
+        )
+
+        if mode_choice == "1":
+            cfg["claude_mode"] = "cli"
+            if not cli_available:
+                console.print("[yellow]Warning: Claude CLI not detected. Install Claude Code first.[/yellow]")
+        elif mode_choice == "2":
+            cfg["claude_mode"] = "api"
+            claude_key = cfg.get("claude_api_key", "")
+            claude_api_key = Prompt.ask("Claude API Key", default=claude_key or "")
+            if claude_api_key:
+                cfg["claude_api_key"] = claude_api_key
+            else:
+                console.print("[yellow]Warning: API mode requires API key[/yellow]")
 
         cfg["server_url"] = server_url.rstrip("/")
         cfg["api_key"] = api_key
         cfg["default_model"] = "qwen2.5-coder:14b"
-        if claude_api_key:
-            cfg["claude_api_key"] = claude_api_key
 
         save_global_config(cfg)
 
-        console.print("[green]Config saved![/green]")
-        if claude_api_key:
-            console.print("[dim]Claude API: Use /claude on to enable[/dim]")
+        console.print("\n[green]Config saved![/green]")
+        console.print(f"[dim]Claude mode: {cfg.get('claude_mode', 'cli')}[/dim]")
+        console.print("[dim]Use /claude on to enable Claude supervisor[/dim]")
         return
 
     client = get_client()

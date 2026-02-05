@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile:*)",
+      "Bash(copy \"C:\\\\graphics\\\\local-code\\\\client\\\\agent.py\" \"%LOCALAPPDATA%\\\\llmcode\\\\agent.py\" /Y)",
+      "Bash(copy \"C:\\\\graphics\\\\local-code\\\\client\\\\tools.py\" \"%LOCALAPPDATA%\\\\llmcode\\\\tools.py\" /Y)",
+      "Bash(copy \"C:\\\\graphics\\\\local-code\\\\client\\\\claude_client.py\" \"%LOCALAPPDATA%\\\\llmcode\\\\claude_client.py\" /Y)"
+    ]
+  }
+}

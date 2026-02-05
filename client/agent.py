@@ -111,6 +111,30 @@ async def agent_chat(
     model = get_default_model()
     iteration = 0
 
+    # 로컬 LLM 호출 전에 Claude 키워드 감지
+    if claude_enabled and not claude_approved and claude_client:
+        # 현재 사용자 요청 찾기
+        user_request = ""
+        for msg in reversed(messages):
+            if msg["role"] == "user" and not msg["content"].startswith("Tool results:"):
+                user_request = msg["content"]
+                break
+
+        # 사용자가 "claude" 언급하면 바로 Claude로 전환
+        if detect_claude_keyword(user_request):
+            console.print(f"[yellow]Claude 협업 요청 감지[/yellow]")
+            if Confirm.ask("[yellow]Claude와 협업할까요?[/yellow]", default=True):
+                return await run_with_claude(
+                    claude_client,
+                    user_request,
+                    client,
+                    messages,
+                    base_path,
+                    model,
+                )
+            else:
+                console.print("[dim]Claude 없이 진행합니다[/dim]")
+
     while iteration < MAX_ITERATIONS:
         iteration += 1
 
@@ -212,33 +236,35 @@ async def agent_chat(
         tool_calls = parse_tool_calls(full_response)
 
         # Claude 요청 감지 (claude_enabled이고 아직 승인 안 받은 경우)
-        if claude_enabled and not claude_approved:
-            claude_reason = parse_claude_request(full_response)
-            if claude_reason:
-                console.print(f"\n\n[yellow]Claude API 사용 추천: {claude_reason}[/yellow]")
-                if Confirm.ask("[yellow]Use Claude API?[/yellow]", default=True):
-                    # Claude로 전환
-                    if claude_client:
-                        # 현재 사용자 요청 찾기
-                        user_request = ""
-                        for msg in reversed(messages):
-                            if msg["role"] == "user" and not msg["content"].startswith("Tool results:"):
-                                user_request = msg["content"]
-                                break
+        if claude_enabled and not claude_approved and claude_client:
+            # 현재 사용자 요청 찾기
+            user_request = ""
+            for msg in reversed(messages):
+                if msg["role"] == "user" and not msg["content"].startswith("Tool results:"):
+                    user_request = msg["content"]
+                    break
 
-                        response, messages = run_with_claude(
-                            claude_client,
-                            user_request,
-                            client,
-                            messages,
-                            base_path,
-                            model,
-                        )
-                        return response, messages
-                    else:
-                        console.print("[red]Claude API key not configured[/red]")
+            # 1. 로컬 LLM이 <request_claude> 태그 출력했는지 확인
+            claude_reason = parse_claude_request(full_response)
+
+            # 2. 사용자 메시지에 "claude" 키워드 있는지 확인 (백업)
+            if not claude_reason and detect_claude_keyword(user_request):
+                claude_reason = "사용자가 Claude 협업을 요청함"
+
+            if claude_reason:
+                console.print(f"\n\n[yellow]Claude 협업 요청: {claude_reason}[/yellow]")
+                if Confirm.ask("[yellow]Claude와 협업할까요?[/yellow]", default=True):
+                    response, messages = await run_with_claude(
+                        claude_client,
+                        user_request,
+                        client,
+                        messages,
+                        base_path,
+                        model,
+                    )
+                    return response, messages
                 else:
-                    console.print("[dim]Continuing without Claude[/dim]")
+                    console.print("[dim]Claude 없이 진행합니다[/dim]")
 
         if not tool_calls:
             # 도구 호출 없음 = 최종 응답
@@ -332,6 +358,23 @@ async def agent_chat(
                     result = {"cancelled": True, "message": "User cancelled"}
                     console.print("[dim]Cancelled[/dim]")
 
+            # ask_claude 도구 처리
+            elif tool_name == "ask_claude":
+                question = args.get("question", "")
+                console.print(f"\n[bold magenta]Asking Claude:[/bold magenta] {question[:100]}...")
+
+                if claude_client:
+                    # Claude에게 질문
+                    claude_response = claude_client.chat(question)
+                    result = {
+                        "success": True,
+                        "response": claude_response,
+                    }
+                    console.print(f"\n[magenta]Claude:[/magenta] {claude_response[:500]}{'...' if len(claude_response) > 500 else ''}")
+                else:
+                    result = {"error": "Claude not available. Run /claude on first."}
+                    console.print("[red]Claude not available[/red]")
+
             tool_results.append({
                 "tool": tool_name,
                 "result": result
@@ -382,7 +425,18 @@ def parse_claude_request(response: str) -> str:
     return None
 
 
-def run_with_claude(
+def detect_claude_keyword(text: str) -> bool:
+    """사용자 메시지에서 Claude 관련 키워드 감지"""
+    keywords = [
+        "claude", "클로드", "클라우드",  # Claude 언급
+        "claude와", "claude랑", "claude한테", "claude에게",
+        "클로드와", "클로드랑", "클로드한테", "클로드에게",
+    ]
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in keywords)
+
+
+async def run_with_claude(
     claude_client,
     user_request: str,
     local_client: APIClient,
@@ -391,13 +445,11 @@ def run_with_claude(
     model: str,
 ) -> tuple[str, list]:
     """
-    Claude supervisor 모드로 실행
+    Claude supervisor 모드로 실행 (async)
 
     Returns:
         (최종 응답, 업데이트된 메시지)
     """
-    import asyncio
-
     console.print("\n[bold magenta]Claude[/bold magenta] Planning...")
 
     # 현재 컨텍스트 요약 (최근 메시지들)
@@ -437,15 +489,9 @@ Execute these steps using available tools. After completing, summarize what was 
     console.print("\n[bold green]Local LLM[/bold green] Executing...")
 
     # 로컬 LLM 실행 (agent_chat 재사용, claude 비활성)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    try:
-        response, messages = loop.run_until_complete(
-            agent_chat(local_client, messages, base_path, claude_enabled=False, claude_approved=False)
-        )
-    finally:
-        loop.close()
+    response, messages = await agent_chat(
+        local_client, messages, base_path, claude_enabled=False, claude_approved=False
+    )
 
     # Claude에게 결과 검토 요청
     console.print("\n[bold magenta]Claude[/bold magenta] Reviewing...")
@@ -468,14 +514,9 @@ Execute these steps using available tools. After completing, summarize what was 
 
             console.print("\n[bold green]Local LLM[/bold green] Continuing...")
 
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                response, messages = loop.run_until_complete(
-                    agent_chat(local_client, messages, base_path, claude_enabled=False, claude_approved=False)
-                )
-            finally:
-                loop.close()
+            response, messages = await agent_chat(
+                local_client, messages, base_path, claude_enabled=False, claude_approved=False
+            )
 
     final_response = f"{response}\n\n[Claude feedback: {feedback}]"
     return final_response, messages

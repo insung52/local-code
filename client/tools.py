@@ -362,6 +362,13 @@ TOOLS = {
             "path": "Working directory",
         }
     },
+    "ask_claude": {
+        "fn": None,  # 특별 처리 (agent.py에서)
+        "description": "Ask Claude (powerful AI assistant) for help. Use for complex tasks, planning, code review, or when you need expert advice.",
+        "parameters": {
+            "question": "Question or task to ask Claude",
+        }
+    },
 }
 
 
@@ -413,30 +420,18 @@ For large files (>500 lines or truncated):
 {"tool": "tool_name", "args": {...}}
 """
 
-    # Claude API 판단 기능 추가
+    # Claude 도구 추가
     if claude_enabled:
         prompt += """
+- ask_claude: {"tool": "ask_claude", "args": {"question": "질문 내용"}}
+  Claude is a powerful AI assistant. Use ask_claude for:
+  - Complex tasks, architecture design, planning
+  - When user mentions "claude", "클로드"
+  - When you are uncertain or need expert advice
+  - Code review, debugging help
 
-## Claude API Decision
-You can request Claude API assistance for complex tasks.
-In your <think> block, evaluate if Claude API is needed:
-
-NEED Claude API when:
-- Complex architecture design or large-scale refactoring
-- Multiple files need coordinated changes
-- You are uncertain about the best approach
-- User explicitly requests expert help
-
-DON'T NEED Claude API when:
-- Simple file read/write operations
-- Clear, straightforward bug fixes
-- Single file modifications
-- You are confident in your approach
-
-If you decide Claude API would help, output at the END of your response:
-<request_claude>reason: Brief explanation why Claude API is needed</request_claude>
-
-If you don't need Claude API, just proceed with the task normally.
+IMPORTANT: You are a LOCAL LLM. Claude is a SEPARATE, more powerful AI.
+When user says "claude랑", "클로드한테", "Claude와" → use ask_claude tool!
 """
 
     return prompt

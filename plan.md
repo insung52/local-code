@@ -107,9 +107,11 @@
 - [ ] 분석용 메인 모델 (qwen2.5-coder:14b)
 - [ ] 모델 자동 선택
 
-### 5-2. Claude API Supervisor Mode ✅ 완료
+### 5-2. Claude Supervisor Mode ✅ 완료
 - [x] /claude on, /claude off 명령어
-- [x] Claude API key 설정 (llmcode --config)
+- [x] 두 가지 모드 지원 (llmcode --config)
+  - **CLI 모드**: `claude -p` 명령어 사용 (Pro 구독, 추가 비용 없음)
+  - **API 모드**: Anthropic API 직접 호출 (크레딧 필요)
 - [x] 로컬 LLM이 Claude 필요성 판단 (<request_claude> 태그)
 - [x] 사용자 승인 후 Claude supervisor 모드 전환
 - [x] Claude 계획 수립 → 로컬 LLM 실행 → Claude 검토 루프
@@ -117,7 +119,7 @@
 
 사용법:
 ```
-llmcode --config        # Claude API key 설정
+llmcode --config        # Claude 모드 설정 (CLI/API)
 /claude on              # Claude supervisor 기능 활성화
 /claude off             # Claude 비활성화
 /claude                 # 현재 상태 확인

@@ -1,22 +1,87 @@
-"""Claude API 클라이언트"""
+"""Claude 클라이언트 - CLI/API 모드 지원"""
 
 import json
+import shutil
+import subprocess
 import urllib.request
-from typing import Optional, Generator
+from typing import Optional
+
+
+def get_claude_path() -> str:
+    """Claude CLI 경로 찾기"""
+    # shutil.which로 PATH에서 찾기
+    claude_path = shutil.which("claude")
+    if claude_path:
+        return claude_path
+    # 못 찾으면 그냥 "claude" 반환 (shell=True에서 처리)
+    return "claude"
 
 
 class ClaudeClient:
-    """Claude API 클라이언트"""
+    """
+    Claude 클라이언트
+    - cli 모드: claude -p 명령어 사용 (Pro 구독)
+    - api 모드: Anthropic API 직접 호출 (크레딧)
+    """
 
     API_URL = "https://api.anthropic.com/v1/messages"
     MODEL = "claude-sonnet-4-20250514"
     MAX_SUMMARY_TOKENS = 1000
 
-    def __init__(self, api_key: str):
+    def __init__(self, mode: str = "cli", api_key: str = None):
+        """
+        Args:
+            mode: "cli" (claude -p) 또는 "api" (Anthropic API)
+            api_key: API 모드일 때 필요
+        """
+        self.mode = mode
         self.api_key = api_key
 
-    def _make_request(self, messages: list, system: str = None, max_tokens: int = 4096) -> dict:
-        """API 요청"""
+        if mode == "api" and not api_key:
+            raise ValueError("API mode requires api_key")
+
+    def _chat_cli(self, prompt: str, system: str = None) -> str:
+        """CLI 모드: claude -p 실행"""
+        try:
+            # 시스템 프롬프트가 있으면 프롬프트에 포함
+            full_prompt = prompt
+            if system:
+                full_prompt = f"[System: {system}]\n\n{prompt}"
+
+            claude_path = get_claude_path()
+
+            # subprocess.Popen으로 stdin 통해 프롬프트 전달
+            process = subprocess.Popen(
+                [claude_path, "-p", "-", "--output-format", "json"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+            )
+
+            stdout, stderr = process.communicate(input=full_prompt, timeout=120)
+
+            if process.returncode != 0:
+                return f"[Claude CLI Error] {stderr}"
+
+            try:
+                data = json.loads(stdout)
+                return data.get("result", "")
+            except json.JSONDecodeError:
+                # JSON 파싱 실패시 stdout 그대로 반환
+                return stdout
+
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return "[Claude CLI Error] Timeout"
+        except FileNotFoundError:
+            return "[Claude CLI Error] claude command not found. Install Claude Code first."
+        except Exception as e:
+            return f"[Claude CLI Error] {str(e)}"
+
+    def _chat_api(self, messages: list, system: str = None, max_tokens: int = 4096) -> str:
+        """API 모드: Anthropic API 직접 호출"""
         payload = {
             "model": self.MODEL,
             "max_tokens": max_tokens,
@@ -41,26 +106,33 @@ class ClaudeClient:
 
         try:
             with urllib.request.urlopen(req, timeout=120) as response:
-                return json.loads(response.read().decode())
+                result = json.loads(response.read().decode())
+                content = result.get("content", [])
+                if content and len(content) > 0:
+                    return content[0].get("text", "")
+                return ""
         except urllib.error.HTTPError as e:
             error_body = e.read().decode() if e.fp else ""
-            return {"error": f"HTTP {e.code}: {error_body}"}
+            return f"[Claude API Error] HTTP {e.code}: {error_body}"
         except Exception as e:
-            return {"error": str(e)}
+            return f"[Claude API Error] {str(e)}"
 
-    def chat(self, messages: list, system: str = None) -> str:
-        """단일 메시지 요청"""
-        result = self._make_request(messages, system)
+    def chat(self, prompt: str, system: str = None) -> str:
+        """
+        단일 메시지 요청
 
-        if "error" in result:
-            return f"[Claude Error] {result['error']}"
+        Args:
+            prompt: 사용자 프롬프트
+            system: 시스템 프롬프트 (선택)
 
-        # 응답 추출
-        content = result.get("content", [])
-        if content and len(content) > 0:
-            return content[0].get("text", "")
-
-        return "[Claude Error] Empty response"
+        Returns:
+            Claude 응답 텍스트
+        """
+        if self.mode == "cli":
+            return self._chat_cli(prompt, system)
+        else:
+            messages = [{"role": "user", "content": prompt}]
+            return self._chat_api(messages, system)
 
     def plan(self, user_request: str, context: str = None) -> dict:
         """
@@ -89,19 +161,18 @@ If you need more information before planning, set needs_more_info to true and li
 Keep plans concise and actionable. Focus on what needs to be done, not how (the executor will handle details).
 Respond in the same language as the user request."""
 
-        messages = [{"role": "user", "content": f"User request: {user_request}"}]
+        prompt = f"User request: {user_request}"
 
         if context:
-            # 컨텍스트 압축 (MAX_SUMMARY_TOKENS 제한)
+            # 컨텍스트 압축
             if len(context) > self.MAX_SUMMARY_TOKENS * 4:
                 context = context[: self.MAX_SUMMARY_TOKENS * 4] + "\n... (truncated)"
-            messages[0]["content"] += f"\n\nContext:\n{context}"
+            prompt += f"\n\nContext:\n{context}"
 
-        response = self.chat(messages, system)
+        response = self.chat(prompt, system)
 
         # JSON 파싱 시도
         try:
-            # JSON 블록 추출
             if "```json" in response:
                 json_str = response.split("```json")[1].split("```")[0]
             elif "```" in response:
@@ -148,14 +219,9 @@ Be concise. Respond in the same language as the original request."""
         if len(execution_result) > self.MAX_SUMMARY_TOKENS * 4:
             execution_result = execution_result[: self.MAX_SUMMARY_TOKENS * 4] + "\n... (truncated)"
 
-        messages = [
-            {
-                "role": "user",
-                "content": f"Original request: {original_request}\n\nExecution result:\n{execution_result}",
-            }
-        ]
+        prompt = f"Original request: {original_request}\n\nExecution result:\n{execution_result}"
 
-        response = self.chat(messages, system)
+        response = self.chat(prompt, system)
 
         # JSON 파싱
         try:
@@ -175,8 +241,28 @@ Be concise. Respond in the same language as the original request."""
             }
 
 
-def test_connection(api_key: str) -> bool:
+def test_cli_available() -> bool:
+    """Claude CLI 사용 가능한지 테스트"""
+    try:
+        claude_path = get_claude_path()
+
+        # shutil.which가 None 반환하면 못 찾은 것
+        if claude_path == "claude" and not shutil.which("claude"):
+            return False
+
+        result = subprocess.run(
+            [claude_path, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def test_api_key(api_key: str) -> bool:
     """API 키 테스트"""
-    client = ClaudeClient(api_key)
-    result = client.chat([{"role": "user", "content": "Hi"}])
-    return not result.startswith("[Claude Error]")
+    client = ClaudeClient(mode="api", api_key=api_key)
+    result = client.chat("Hi")
+    return not result.startswith("[Claude")
