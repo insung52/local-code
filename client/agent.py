@@ -263,12 +263,16 @@ async def agent_chat(
     return full_response, messages
 
 
-def get_system_prompt(summaries: list = None) -> str:
+def get_system_prompt(summaries: list = None, prev_summary: str = None) -> str:
     """시스템 프롬프트 생성"""
     prompt = get_tools_prompt()
 
     prompt += "\n\n## Context\n"
     prompt += "You are a code assistant. Help the user understand and modify their code.\n"
+
+    if prev_summary:
+        prompt += "\n### Previous Conversation Summary\n"
+        prompt += prev_summary + "\n"
 
     if summaries:
         prompt += "\n### Project File Summaries\n"

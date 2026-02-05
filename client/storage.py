@@ -187,9 +187,14 @@ class VectorStore:
 class ConversationHistory:
     """대화 히스토리 관리"""
 
+    # 토큰 제한 (qwen2.5-coder:14b 컨텍스트 고려)
+    MAX_TOKENS = 8000
+    CHARS_PER_TOKEN = 3  # 대략적 추정
+
     def __init__(self, base_path: Path):
         self.history_file = get_project_dir(base_path) / "history.json"
         self.messages: List[Dict] = []
+        self.summary: str = ""
         self._load()
 
     def _load(self):
@@ -198,15 +203,25 @@ class ConversationHistory:
             try:
                 data = json.loads(self.history_file.read_text(encoding="utf-8"))
                 self.messages = data.get("messages", [])
+                self.summary = data.get("summary", "")
             except (json.JSONDecodeError, KeyError):
                 self.messages = []
+                self.summary = ""
 
     def _save(self):
         """히스토리 저장"""
         self.history_file.write_text(
-            json.dumps({"messages": self.messages}, ensure_ascii=False, indent=2),
+            json.dumps({
+                "messages": self.messages,
+                "summary": self.summary
+            }, ensure_ascii=False, indent=2),
             encoding="utf-8"
         )
+
+    def _estimate_tokens(self, messages: List[Dict]) -> int:
+        """토큰 수 대략 추정"""
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        return total_chars // self.CHARS_PER_TOKEN
 
     def add_message(self, role: str, content: str):
         """메시지 추가"""
@@ -217,7 +232,40 @@ class ConversationHistory:
         """최근 메시지 조회"""
         return self.messages[-limit:]
 
+    def get_summary(self) -> str:
+        """이전 대화 요약 조회"""
+        return self.summary
+
+    def set_summary(self, summary: str):
+        """대화 요약 저장"""
+        self.summary = summary
+        self._save()
+
+    def compress(self, keep_recent: int = 6) -> List[Dict]:
+        """
+        오래된 메시지를 압축하고 최근 메시지만 반환
+
+        Returns:
+            압축 대상 메시지 (요약용)
+        """
+        if len(self.messages) <= keep_recent:
+            return []
+
+        # 압축 대상 = 오래된 메시지
+        to_compress = self.messages[:-keep_recent]
+        # 최근 메시지만 유지
+        self.messages = self.messages[-keep_recent:]
+        self._save()
+
+        return to_compress
+
+    def needs_compression(self, threshold: int = None) -> bool:
+        """압축이 필요한지 체크"""
+        threshold = threshold or self.MAX_TOKENS
+        return self._estimate_tokens(self.messages) > threshold
+
     def clear(self):
         """히스토리 초기화"""
         self.messages = []
+        self.summary = ""
         self._save()

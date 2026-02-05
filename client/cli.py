@@ -1,6 +1,7 @@
 import click
 import asyncio
 import sys
+import os
 import signal
 from pathlib import Path
 from rich.console import Console
@@ -62,7 +63,7 @@ def get_client() -> APIClient:
     return APIClient(server_url, api_key)
 
 
-async def run_agent_chat(client: APIClient, base_path: Path):
+async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool = False):
     """에이전트 대화 모드"""
     global stop_requested
 
@@ -82,15 +83,47 @@ async def run_agent_chat(client: APIClient, base_path: Path):
     if summaries:
         console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
 
-    console.print()
-
-    # 시스템 프롬프트
-    system_prompt = get_system_prompt(summaries)
+    # 시스템 프롬프트 (이전 요약 포함)
+    prev_summary = history.get_summary()
+    system_prompt = get_system_prompt(summaries, prev_summary)
     messages = [{"role": "system", "content": system_prompt}]
 
-    # 이전 대화 로드
-    prev_messages = history.get_messages(limit=6)
-    messages.extend(prev_messages)
+    # -c 옵션이면 이전 대화 로드
+    if continue_chat:
+        prev_messages = history.get_messages(limit=20)
+        if prev_messages:
+            # 터미널 클리어
+            os.system('cls' if os.name == 'nt' else 'clear')
+
+            # 헤더 다시 출력
+            console.print("[bold]Agent Mode[/bold] [dim](continued)[/dim]")
+            console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]\n")
+
+            # 이전 대화 표시
+            for msg in prev_messages:
+                role = msg.get("role")
+                content = msg.get("content", "")
+
+                if role == "user":
+                    # Tool results는 생략
+                    if content.startswith("Tool results:"):
+                        continue
+                    console.print(f"[bold cyan]You[/bold cyan]: {content[:200]}{'...' if len(content) > 200 else ''}")
+                elif role == "assistant":
+                    # 긴 응답은 줄이기
+                    display = content[:300] + "..." if len(content) > 300 else content
+                    console.print(f"[bold green]Assistant[/bold green]: {display}")
+
+            messages.extend(prev_messages)
+            console.print(f"\n[dim]--- {len(prev_messages)} messages loaded ---[/dim]")
+        else:
+            console.print("[dim]No previous conversation[/dim]")
+    else:
+        # 새 대화 - 히스토리 클리어
+        history.clear()
+        console.print("[dim]New conversation[/dim]")
+
+    console.print()
 
     while True:
         stop_requested = False
@@ -167,7 +200,29 @@ async def run_agent_chat(client: APIClient, base_path: Path):
         if response:
             history.add_message("assistant", response)
 
-        # 토큰 표시
+        # 대화 압축 체크
+        if history.needs_compression():
+            to_compress = history.compress(keep_recent=6)
+            if to_compress:
+                # 압축된 메시지 간단 요약 생성
+                summary_parts = []
+                for m in to_compress[-4:]:  # 최근 4개만
+                    role = "User" if m["role"] == "user" else "Assistant"
+                    content = m["content"][:100]
+                    summary_parts.append(f"{role}: {content}...")
+
+                new_summary = history.get_summary()
+                if new_summary:
+                    new_summary += "\n---\n"
+                new_summary += "\n".join(summary_parts)
+                history.set_summary(new_summary[-2000:])  # 2000자 제한
+
+                # 메시지 리스트도 재구성
+                system_prompt = get_system_prompt(summaries, history.get_summary())
+                messages = [{"role": "system", "content": system_prompt}]
+                messages.extend(history.get_messages())
+                console.print("[dim]Conversation compressed[/dim]")
+
         console.print()
 
 
@@ -264,18 +319,20 @@ async def run_single_query(client: APIClient, prompt: str, base_path: Path):
 @click.argument("prompt", required=False)
 @click.option("--scan", "-s", is_flag=True, help="Scan project first")
 @click.option("--path", "-p", type=click.Path(exists=True), default=".", help="Project path")
-@click.option("--config", "-c", is_flag=True, help="Reconfigure")
-@click.version_option(version="0.2.0")
-def cli(prompt: str, scan: bool, path: str, config: bool):
+@click.option("--continue", "-c", "continue_chat", is_flag=True, help="Continue previous conversation")
+@click.option("--config", is_flag=True, help="Reconfigure")
+@click.version_option(version="0.3.0")
+def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool):
     """
     Local Code Assistant - AI Code Agent
 
     \b
     Usage:
-      llmcode              Interactive mode
+      llmcode              New conversation
+      llmcode -c           Continue previous conversation
       llmcode "question"   Quick question
       llmcode -s           Scan then start
-      llmcode -c           Reconfigure
+      llmcode --config     Reconfigure
     """
     # Ctrl+C 핸들러
     signal.signal(signal.SIGINT, signal_handler)
@@ -316,7 +373,7 @@ def cli(prompt: str, scan: bool, path: str, config: bool):
     if prompt:
         asyncio.run(run_single_query(client, prompt, base_path))
     else:
-        asyncio.run(run_agent_chat(client, base_path))
+        asyncio.run(run_agent_chat(client, base_path, continue_chat))
 
 
 def main():
