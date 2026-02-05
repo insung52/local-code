@@ -23,6 +23,8 @@ CLIENT_FILES = [
     "scanner.py",
     "chunker.py",
     "storage.py",
+    "version.py",
+    "updater.py",
 ]
 
 

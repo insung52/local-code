@@ -91,7 +91,11 @@
 - [ ] GitHub Releases 배포
 
 ### 4-5. 자동 업데이트
-- github 새로운 릴리즈가 올라오면 그걸 감지하든 뭐 특정 방법을 이용해서 자동으로 클라이언트 코드를 업데이트 한다.
+- [x] version.py - 버전 관리
+- [x] updater.py - GitHub Releases 체크 & 다운로드
+- [x] cli.py - 시작 시 백그라운드 체크
+- [x] --update 옵션
+- [x] installer --silent 모드
 
 ---
 

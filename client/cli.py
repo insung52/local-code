@@ -3,6 +3,7 @@ import asyncio
 import sys
 import os
 import signal
+import threading
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
@@ -18,6 +19,7 @@ from scanner import scan_files
 from api_client import APIClient
 from storage import SummaryStore, VectorStore, ConversationHistory
 from agent import agent_chat, get_system_prompt
+from version import VERSION
 
 console = Console()
 
@@ -61,6 +63,86 @@ def get_client() -> APIClient:
     """API 클라이언트 생성"""
     server_url, api_key = ensure_config()
     return APIClient(server_url, api_key)
+
+
+# 업데이트 관련
+update_info_cache = None
+
+
+def check_update_background():
+    """백그라운드에서 업데이트 확인"""
+    global update_info_cache
+    try:
+        from updater import check_for_update
+        update_info_cache = check_for_update()
+    except Exception:
+        pass
+
+
+def show_update_notice():
+    """업데이트 알림 표시"""
+    global update_info_cache
+    if update_info_cache:
+        current = update_info_cache["current_version"]
+        latest = update_info_cache["latest_version"]
+        console.print(f"[yellow]Update available: v{current} → {latest}[/yellow]")
+        console.print("[dim]Run 'llmcode --update' to update[/dim]\n")
+
+
+def perform_update_interactive():
+    """대화형 업데이트 수행"""
+    from updater import check_for_update, find_installer_asset, download_installer, run_installer
+
+    console.print("[bold]Checking for updates...[/bold]")
+
+    update_info = check_for_update()
+    if not update_info:
+        console.print("[green]Already up to date![/green]")
+        return
+
+    current = update_info["current_version"]
+    latest = update_info["latest_version"]
+
+    console.print(f"\n[yellow]Update available: v{current} → {latest}[/yellow]")
+
+    if update_info.get("body"):
+        console.print(f"\n[dim]Release notes:[/dim]\n{update_info['body'][:300]}...")
+
+    if not Confirm.ask("\n[yellow]Download and install?[/yellow]", default=True):
+        console.print("[dim]Cancelled[/dim]")
+        return
+
+    # installer URL 찾기
+    installer_url = find_installer_asset(update_info.get("assets", []))
+    if not installer_url:
+        console.print("[red]Installer not found in release[/red]")
+        console.print(f"[dim]Manual download: {update_info.get('release_url')}[/dim]")
+        return
+
+    # 다운로드
+    console.print("\n[bold]Downloading...[/bold]")
+
+    def progress(downloaded, total):
+        pct = int(downloaded / total * 100)
+        # 한 줄에서 덮어쓰기
+        sys.stdout.write(f"\r  {pct}% ({downloaded // 1024}KB / {total // 1024}KB)    ")
+        sys.stdout.flush()
+
+    exe_path = download_installer(installer_url, progress)
+    sys.stdout.write("\n")  # 줄바꿈
+
+    if not exe_path:
+        console.print("[red]Download failed[/red]")
+        return
+
+    console.print("[green]Download complete![/green]")
+    console.print("\n[bold]Running installer...[/bold]")
+
+    if run_installer(exe_path, silent=False):
+        console.print("[green]Installer started. Please follow the prompts.[/green]")
+        console.print("[dim]Restart llmcode after installation.[/dim]")
+    else:
+        console.print("[red]Failed to start installer[/red]")
 
 
 async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool = False):
@@ -127,6 +209,9 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
         if summaries:
             console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
         history.clear()
+
+    # 업데이트 알림 (모든 출력 후)
+    show_update_notice()
 
     console.print()
 
@@ -326,8 +411,9 @@ async def run_single_query(client: APIClient, prompt: str, base_path: Path):
 @click.option("--path", "-p", type=click.Path(exists=True), default=".", help="Project path")
 @click.option("--continue", "-c", "continue_chat", is_flag=True, help="Continue previous conversation")
 @click.option("--config", is_flag=True, help="Reconfigure")
-@click.version_option(version="0.3.0")
-def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool):
+@click.option("--update", "-u", is_flag=True, help="Check and install updates")
+@click.version_option(version=VERSION)
+def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, update: bool):
     """
     Local Code Assistant - AI Code Agent
 
@@ -338,9 +424,19 @@ def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool):
       llmcode "question"   Quick question
       llmcode -s           Scan then start
       llmcode --config     Reconfigure
+      llmcode --update     Check for updates
     """
     # Ctrl+C 핸들러
     signal.signal(signal.SIGINT, signal_handler)
+
+    # 업데이트 명령
+    if update:
+        perform_update_interactive()
+        return
+
+    # 백그라운드에서 업데이트 체크 시작
+    update_thread = threading.Thread(target=check_update_background, daemon=True)
+    update_thread.start()
 
     if config:
         console.print("[yellow]Reconfiguring...[/yellow]\n")
@@ -368,6 +464,9 @@ def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool):
     except Exception as e:
         console.print(f"[red]Server connection failed: {e}[/red]")
         return
+
+    # 업데이트 체크 완료 대기 (최대 1초)
+    update_thread.join(timeout=1.0)
 
     # 스캔 요청
     if scan:

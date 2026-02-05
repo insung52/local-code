@@ -48,6 +48,8 @@ CLIENT_FILES = [
     "scanner.py",
     "chunker.py",
     "storage.py",
+    "version.py",
+    "updater.py",
 ]
 
 
@@ -315,30 +317,39 @@ def print_success():
 
 
 def main():
-    print_banner()
+    # --silent 옵션 체크
+    silent_mode = "--silent" in sys.argv or "-s" in sys.argv
+
+    if not silent_mode:
+        print_banner()
 
     # Windows 확인
     if os.name != 'nt':
         print("This installer is for Windows only.")
         print("For Linux/Mac, use: pip install -e .")
-        input("Press Enter to exit...")
+        if not silent_mode:
+            input("Press Enter to exit...")
         return
 
     # Python 확인
     if sys.version_info < (3, 9):
         print(f"Python 3.9+ required. Current: {sys.version}")
-        input("Press Enter to exit...")
+        if not silent_mode:
+            input("Press Enter to exit...")
         return
 
-    print(f"Install location: {INSTALL_DIR}")
-    print()
+    if not silent_mode:
+        print(f"Install location: {INSTALL_DIR}")
+        print()
 
-    response = input("Continue? [Y/n]: ").strip().lower()
-    if response and response != 'y':
-        print("Cancelled.")
-        return
+        response = input("Continue? [Y/n]: ").strip().lower()
+        if response and response != 'y':
+            print("Cancelled.")
+            return
 
-    print()
+        print()
+    else:
+        print(f"[Silent] Installing to {INSTALL_DIR}...", flush=True)
 
     try:
         copy_files()
@@ -346,12 +357,16 @@ def main():
         add_to_path()
         install_dependencies()
         setup_config()
-        print_success()
+        if not silent_mode:
+            print_success()
+        else:
+            print("[Silent] Installation complete!", flush=True)
     except Exception as e:
         print(f"\nError: {e}")
         print("Installation failed.")
 
-    input("Press Enter to exit...")
+    if not silent_mode:
+        input("Press Enter to exit...")
 
 
 if __name__ == "__main__":
