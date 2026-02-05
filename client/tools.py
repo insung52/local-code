@@ -365,7 +365,7 @@ TOOLS = {
 }
 
 
-def get_tools_prompt() -> str:
+def get_tools_prompt(claude_enabled: bool = False) -> str:
     """도구 설명 프롬프트 생성"""
     prompt = """You are a code assistant. Be accurate and thorough.
 
@@ -412,6 +412,33 @@ For large files (>500 lines or truncated):
 ## Format
 {"tool": "tool_name", "args": {...}}
 """
+
+    # Claude API 판단 기능 추가
+    if claude_enabled:
+        prompt += """
+
+## Claude API Decision
+You can request Claude API assistance for complex tasks.
+In your <think> block, evaluate if Claude API is needed:
+
+NEED Claude API when:
+- Complex architecture design or large-scale refactoring
+- Multiple files need coordinated changes
+- You are uncertain about the best approach
+- User explicitly requests expert help
+
+DON'T NEED Claude API when:
+- Simple file read/write operations
+- Clear, straightforward bug fixes
+- Single file modifications
+- You are confident in your approach
+
+If you decide Claude API would help, output at the END of your response:
+<request_claude>reason: Brief explanation why Claude API is needed</request_claude>
+
+If you don't need Claude API, just proceed with the task normally.
+"""
+
     return prompt
 
 

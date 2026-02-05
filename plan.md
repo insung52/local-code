@@ -12,6 +12,7 @@
 | Phase 2 | ✅ 완료 | RAG, 임베딩, 요약 |
 | Phase 3 | ✅ 완료 | 에이전트 루프, ESC 중지, 파일 수정 확인 |
 | Phase 4 | ✅ 완료 | Git 연동, 명령 실행 |
+| Phase 5 | ✅ 완료 | Claude API Supervisor 모드 |
 
 ---
 
@@ -106,10 +107,30 @@
 - [ ] 분석용 메인 모델 (qwen2.5-coder:14b)
 - [ ] 모델 자동 선택
 
-### 5-2. Claude API Fallback
-- [ ] 복잡한 질문은 Claude API로
-- [ ] 비용 제한 설정
+### 5-2. Claude API Supervisor Mode ✅ 완료
+- [x] /claude on, /claude off 명령어
+- [x] Claude API key 설정 (llmcode --config)
+- [x] 로컬 LLM이 Claude 필요성 판단 (<request_claude> 태그)
+- [x] 사용자 승인 후 Claude supervisor 모드 전환
+- [x] Claude 계획 수립 → 로컬 LLM 실행 → Claude 검토 루프
+- [x] MAX_SUMMARY_TOKENS로 토큰 제한 (1000 토큰)
 
+사용법:
+```
+llmcode --config        # Claude API key 설정
+/claude on              # Claude supervisor 기능 활성화
+/claude off             # Claude 비활성화
+/claude                 # 현재 상태 확인
+```
+
+작동 방식:
+1. /claude on 상태에서 로컬 LLM이 복잡한 작업 감지
+2. <request_claude> 태그로 Claude 사용 추천
+3. 사용자 승인 (y/n)
+4. Claude가 계획 수립 (plan)
+5. 로컬 LLM이 도구 실행
+6. Claude가 결과 검토 (review)
+7. 필요시 추가 작업 지시
 ---
 
 ## 사용법

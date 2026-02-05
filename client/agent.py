@@ -92,9 +92,17 @@ async def agent_chat(
     client: APIClient,
     messages: list[dict],
     base_path: Path,
+    claude_enabled: bool = False,
+    claude_approved: bool = False,
+    claude_client=None,
 ) -> tuple[str, list[dict]]:
     """
     에이전트 루프 실행
+
+    Args:
+        claude_enabled: /claude on 상태인지
+        claude_approved: 이번 요청에서 Claude 사용이 승인되었는지
+        claude_client: ClaudeClient 인스턴스
 
     Returns:
         (최종 응답 텍스트, 업데이트된 메시지 리스트)
@@ -202,6 +210,35 @@ async def agent_chat(
 
         # 도구 호출 파싱
         tool_calls = parse_tool_calls(full_response)
+
+        # Claude 요청 감지 (claude_enabled이고 아직 승인 안 받은 경우)
+        if claude_enabled and not claude_approved:
+            claude_reason = parse_claude_request(full_response)
+            if claude_reason:
+                console.print(f"\n\n[yellow]Claude API 사용 추천: {claude_reason}[/yellow]")
+                if Confirm.ask("[yellow]Use Claude API?[/yellow]", default=True):
+                    # Claude로 전환
+                    if claude_client:
+                        # 현재 사용자 요청 찾기
+                        user_request = ""
+                        for msg in reversed(messages):
+                            if msg["role"] == "user" and not msg["content"].startswith("Tool results:"):
+                                user_request = msg["content"]
+                                break
+
+                        response, messages = run_with_claude(
+                            claude_client,
+                            user_request,
+                            client,
+                            messages,
+                            base_path,
+                            model,
+                        )
+                        return response, messages
+                    else:
+                        console.print("[red]Claude API key not configured[/red]")
+                else:
+                    console.print("[dim]Continuing without Claude[/dim]")
 
         if not tool_calls:
             # 도구 호출 없음 = 최종 응답
@@ -317,9 +354,9 @@ async def agent_chat(
     return full_response, messages
 
 
-def get_system_prompt(summaries: list = None, prev_summary: str = None) -> str:
+def get_system_prompt(summaries: list = None, prev_summary: str = None, claude_enabled: bool = False) -> str:
     """시스템 프롬프트 생성"""
-    prompt = get_tools_prompt()
+    prompt = get_tools_prompt(claude_enabled=claude_enabled)
 
     prompt += "\n\n## Context\n"
     prompt += "You are a code assistant. Help the user understand and modify their code.\n"
@@ -334,3 +371,111 @@ def get_system_prompt(summaries: list = None, prev_summary: str = None) -> str:
             prompt += f"\n**{s['path']}**: {s['summary'][:200]}...\n"
 
     return prompt
+
+
+def parse_claude_request(response: str) -> str:
+    """<request_claude> 태그에서 이유 추출"""
+    import re
+    match = re.search(r'<request_claude>reason:\s*(.+?)</request_claude>', response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def run_with_claude(
+    claude_client,
+    user_request: str,
+    local_client: APIClient,
+    messages: list,
+    base_path: Path,
+    model: str,
+) -> tuple[str, list]:
+    """
+    Claude supervisor 모드로 실행
+
+    Returns:
+        (최종 응답, 업데이트된 메시지)
+    """
+    import asyncio
+
+    console.print("\n[bold magenta]Claude[/bold magenta] Planning...")
+
+    # 현재 컨텍스트 요약 (최근 메시지들)
+    context_parts = []
+    for msg in messages[-6:]:
+        if msg["role"] != "system":
+            content = msg["content"][:500]
+            context_parts.append(f"{msg['role']}: {content}")
+    context = "\n".join(context_parts)
+
+    # Claude에게 계획 요청
+    plan_result = claude_client.plan(user_request, context)
+
+    if plan_result.get("needs_more_info"):
+        questions = plan_result.get("questions", [])
+        return f"[Claude] 추가 정보 필요:\n" + "\n".join(f"- {q}" for q in questions), messages
+
+    plan = plan_result.get("plan", "")
+    steps = plan_result.get("steps", [])
+
+    console.print(f"\n[magenta]Plan:[/magenta] {plan}")
+    if steps:
+        for i, step in enumerate(steps, 1):
+            console.print(f"[dim]  {i}. {step}[/dim]")
+
+    # 로컬 LLM에게 실행 지시
+    execution_prompt = f"""Claude has created this plan:
+{plan}
+
+Steps:
+{chr(10).join(f'{i+1}. {s}' for i, s in enumerate(steps))}
+
+Execute these steps using available tools. After completing, summarize what was done."""
+
+    messages.append({"role": "user", "content": execution_prompt})
+
+    console.print("\n[bold green]Local LLM[/bold green] Executing...")
+
+    # 로컬 LLM 실행 (agent_chat 재사용, claude 비활성)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        response, messages = loop.run_until_complete(
+            agent_chat(local_client, messages, base_path, claude_enabled=False, claude_approved=False)
+        )
+    finally:
+        loop.close()
+
+    # Claude에게 결과 검토 요청
+    console.print("\n[bold magenta]Claude[/bold magenta] Reviewing...")
+
+    review_result = claude_client.review(user_request, response)
+
+    status = review_result.get("status", "completed")
+    feedback = review_result.get("feedback", "")
+
+    console.print(f"[magenta]Status:[/magenta] {status}")
+    console.print(f"[magenta]Feedback:[/magenta] {feedback}")
+
+    if status == "continue":
+        next_steps = review_result.get("next_steps", [])
+        if next_steps:
+            # 다음 단계 실행 (재귀적으로 한 번만)
+            next_prompt = "Continue with:\n" + "\n".join(f"- {s}" for s in next_steps)
+            messages.append({"role": "assistant", "content": response})
+            messages.append({"role": "user", "content": next_prompt})
+
+            console.print("\n[bold green]Local LLM[/bold green] Continuing...")
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                response, messages = loop.run_until_complete(
+                    agent_chat(local_client, messages, base_path, claude_enabled=False, claude_approved=False)
+                )
+            finally:
+                loop.close()
+
+    final_response = f"{response}\n\n[Claude feedback: {feedback}]"
+    return final_response, messages

@@ -20,6 +20,7 @@ from api_client import APIClient
 from storage import SummaryStore, VectorStore, ConversationHistory
 from agent import agent_chat, get_system_prompt
 from version import VERSION
+from claude_client import ClaudeClient
 
 console = Console()
 
@@ -151,6 +152,14 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
 
     history = ConversationHistory(base_path)
 
+    # Claude 설정
+    claude_enabled = False
+    claude_client = None
+    config = get_global_config()
+    claude_api_key = config.get("claude_api_key", "")
+    if claude_api_key:
+        claude_client = ClaudeClient(claude_api_key)
+
     # 프로젝트 요약 로드 (있으면)
     summaries = []
     try:
@@ -164,7 +173,7 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
 
     # 시스템 프롬프트 (이전 요약 포함)
     prev_summary = history.get_summary()
-    system_prompt = get_system_prompt(summaries, prev_summary)
+    system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=claude_enabled)
     messages = [{"role": "system", "content": system_prompt}]
 
     # -c 옵션이면 이전 대화 로드
@@ -246,10 +255,35 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
             # 요약 다시 로드
             try:
                 summaries = SummaryStore(base_path).get_all_summaries()
-                system_prompt = get_system_prompt(summaries)
+                system_prompt = get_system_prompt(summaries, claude_enabled=claude_enabled)
                 messages[0] = {"role": "system", "content": system_prompt}
             except Exception:
                 pass
+            continue
+
+        if cmd.lower() == "/claude on":
+            if not claude_api_key:
+                console.print("[red]Claude API key not set. Run: llmcode --config[/red]")
+            else:
+                claude_enabled = True
+                # 시스템 프롬프트 업데이트
+                system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=True)
+                messages[0] = {"role": "system", "content": system_prompt}
+                console.print("[green]Claude API enabled[/green]")
+            continue
+
+        if cmd.lower() == "/claude off":
+            claude_enabled = False
+            system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=False)
+            messages[0] = {"role": "system", "content": system_prompt}
+            console.print("[dim]Claude API disabled[/dim]")
+            continue
+
+        if cmd.lower() == "/claude":
+            status = "[green]ON[/green]" if claude_enabled else "[dim]OFF[/dim]"
+            key_status = "[green]configured[/green]" if claude_api_key else "[red]not set[/red]"
+            console.print(f"Claude API: {status} (key: {key_status})")
+            console.print("[dim]Usage: /claude on, /claude off[/dim]")
             continue
 
         if cmd.lower().startswith("/include "):
@@ -284,7 +318,14 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
         console.print("\n[bold green]Assistant[/bold green]")
 
         # 에이전트 루프 실행
-        response, messages = await agent_chat(client, messages, base_path)
+        response, messages = await agent_chat(
+            client,
+            messages,
+            base_path,
+            claude_enabled=claude_enabled,
+            claude_approved=False,  # 새 요청마다 리셋
+            claude_client=claude_client,
+        )
 
         # 응답 저장
         if response:
@@ -441,15 +482,23 @@ def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, u
     if config:
         console.print("[yellow]Reconfiguring...[/yellow]\n")
         server_url = Prompt.ask("Server URL", default=get_server_url() or "http://100.104.99.20:8000")
-        api_key = Prompt.ask("API Key", default=get_api_key() or "")
+        api_key = Prompt.ask("API Key (local server)", default=get_api_key() or "")
 
         cfg = get_global_config()
+        claude_key = cfg.get("claude_api_key", "")
+        claude_api_key = Prompt.ask("Claude API Key (optional, press Enter to skip)", default=claude_key or "")
+
         cfg["server_url"] = server_url.rstrip("/")
         cfg["api_key"] = api_key
         cfg["default_model"] = "qwen2.5-coder:14b"
+        if claude_api_key:
+            cfg["claude_api_key"] = claude_api_key
+
         save_global_config(cfg)
 
         console.print("[green]Config saved![/green]")
+        if claude_api_key:
+            console.print("[dim]Claude API: Use /claude on to enable[/dim]")
         return
 
     client = get_client()

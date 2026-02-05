@@ -50,6 +50,7 @@ CLIENT_FILES = [
     "storage.py",
     "version.py",
     "updater.py",
+    "claude_client.py",
 ]
 
 
