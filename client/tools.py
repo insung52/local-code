@@ -52,8 +52,12 @@ def list_files(path: str = ".", recursive: bool = False, max_depth: int = 2) -> 
         return {"error": str(e)}
 
 
-def read_file(path: str, max_lines: int = 500) -> dict:
-    """파일 내용 읽기"""
+def read_file(path: str, line_start: int = None, line_end: int = None, max_lines: int = 500) -> dict:
+    """
+    파일 내용 읽기
+    - line_start/line_end: 특정 줄 범위만 읽기 (1-based)
+    - max_lines: 최대 줄 수 (기본 500)
+    """
     try:
         file_path = Path(path).resolve()
 
@@ -63,23 +67,52 @@ def read_file(path: str, max_lines: int = 500) -> dict:
         if not file_path.is_file():
             return {"error": f"Not a file: {path}"}
 
-        # 파일 크기 체크 (500KB 제한)
-        if file_path.stat().st_size > 500 * 1024:
-            return {"error": f"File too large: {path} (>500KB)"}
+        # 파일 크기 체크 (1MB 제한, 범위 지정시 더 큼)
+        file_size = file_path.stat().st_size
+        if file_size > 1024 * 1024 and line_start is None:
+            return {
+                "error": f"File too large: {path} ({file_size // 1024}KB)",
+                "hint": "Use search_code first to find line numbers, then read_file with line_start/line_end",
+                "total_lines": sum(1 for _ in open(file_path, encoding='utf-8', errors='replace'))
+            }
 
         content = file_path.read_text(encoding='utf-8', errors='replace')
-        lines = content.split('\n')
+        all_lines = content.split('\n')
+        total_lines = len(all_lines)
 
+        # 범위 지정된 경우
+        if line_start is not None:
+            start_idx = max(0, line_start - 1)  # 1-based to 0-based
+            end_idx = line_end if line_end else start_idx + max_lines
+            end_idx = min(end_idx, total_lines)
+
+            lines = all_lines[start_idx:end_idx]
+            # 줄 번호 포함해서 반환
+            numbered_lines = [f"{i}: {line}" for i, line in enumerate(lines, start=start_idx + 1)]
+
+            return {
+                "path": str(file_path),
+                "content": '\n'.join(numbered_lines),
+                "line_range": f"{start_idx + 1}-{end_idx}",
+                "total_lines": total_lines,
+                "lines_read": len(lines),
+            }
+
+        # 전체 읽기 (max_lines 제한)
         truncated = False
-        if len(lines) > max_lines:
-            lines = lines[:max_lines]
+        if total_lines > max_lines:
+            lines = all_lines[:max_lines]
             truncated = True
+        else:
+            lines = all_lines
 
         return {
             "path": str(file_path),
             "content": '\n'.join(lines),
             "lines": len(lines),
+            "total_lines": total_lines,
             "truncated": truncated,
+            "hint": "Use line_start/line_end to read specific sections" if truncated else None,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -282,9 +315,11 @@ TOOLS = {
     },
     "read_file": {
         "fn": read_file,
-        "description": "Read file content",
+        "description": "Read file content (supports line ranges for large files)",
         "parameters": {
             "path": "File path to read",
+            "line_start": "Start line number (1-based, optional)",
+            "line_end": "End line number (optional)",
         }
     },
     "search_code": {
@@ -352,12 +387,19 @@ Use <think> tags also when:
 
 ## Tools
 - list_files: {"tool": "list_files", "args": {"path": "."}}
-- read_file: {"tool": "read_file", "args": {"path": "C:/full/path/file.py"}}
+- read_file: {"tool": "read_file", "args": {"path": "file.py"}}
+- read_file (range): {"tool": "read_file", "args": {"path": "file.py", "line_start": 100, "line_end": 150}}
 - search_code: {"tool": "search_code", "args": {"query": "keyword"}}
 - write_file: {"tool": "write_file", "args": {"path": "file.py", "content": "..."}}
 - git_status: {"tool": "git_status", "args": {"path": "."}}
 - git_diff: {"tool": "git_diff", "args": {"path": ".", "file": "optional.py"}}
 - run_command: {"tool": "run_command", "args": {"command": "npm test"}}
+
+## Large File Strategy
+For large files (>500 lines or truncated):
+1. Use search_code to find relevant line numbers first
+2. Then use read_file with line_start/line_end to read specific sections
+3. Never try to read entire large files at once
 
 ## Rules
 1. ALWAYS think first with <think> tags before using tools.
