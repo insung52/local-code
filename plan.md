@@ -178,4 +178,3 @@ ESC      - 응답 중지
 1. **증분 스캔** - git status로 변경된 파일만 재인덱싱
 2. **GitHub Releases** - llmcode-setup.exe 배포
 3. **멀티 모델** - Phase 5
-
