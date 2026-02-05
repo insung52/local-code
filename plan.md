@@ -85,9 +85,14 @@
 
 ---
 
-## Phase 5 - 나중에 (선택)
+### 4-4. 간편 설치 (.exe)
+- [x] installer.py - 설치 스크립트
+- [x] build.py - PyInstaller 빌드
+- [ ] GitHub Releases 배포
 
--git clone 안하고도 간단하게 클라이언트 사용할 수 있는 방법 만들기 (.exe 설치 파일 느낌)
+---
+
+## Phase 5 - 나중에 (선택)
 
 ### 5-1. 멀티 모델
 - [ ] 요약용 경량 모델 (llama3.2:3b)
@@ -141,7 +146,6 @@ ESC      - 응답 중지
 
 선택적 개선사항:
 1. **증분 스캔** - git status로 변경된 파일만 재인덱싱
-2. **응답 캐싱** - 동일 질문 캐싱
-3. **간편 설치** - git clone 없이 .exe 설치파일 배포
-4. **멀티 모델** - Phase 5
+2. **GitHub Releases** - llmcode-setup.exe 배포
+3. **멀티 모델** - Phase 5
 
