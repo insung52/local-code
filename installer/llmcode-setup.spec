@@ -5,7 +5,7 @@ a = Analysis(
     ['C:\\graphics\\local-code\\installer\\installer.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\graphics\\local-code\\client\\cli.py', '.'), ('C:\\graphics\\local-code\\client\\api_client.py', '.'), ('C:\\graphics\\local-code\\client\\agent.py', '.'), ('C:\\graphics\\local-code\\client\\tools.py', '.'), ('C:\\graphics\\local-code\\client\\config.py', '.'), ('C:\\graphics\\local-code\\client\\scanner.py', '.'), ('C:\\graphics\\local-code\\client\\chunker.py', '.'), ('C:\\graphics\\local-code\\client\\storage.py', '.'), ('C:\\graphics\\local-code\\client\\version.py', '.'), ('C:\\graphics\\local-code\\client\\updater.py', '.'), ('C:\\graphics\\local-code\\client\\claude_client.py', '.'), ('C:\\graphics\\local-code\\client\\requirements.txt', '.')],
+    datas=[('C:\\graphics\\local-code\\client\\cli.py', '.'), ('C:\\graphics\\local-code\\client\\api_client.py', '.'), ('C:\\graphics\\local-code\\client\\agent.py', '.'), ('C:\\graphics\\local-code\\client\\tools.py', '.'), ('C:\\graphics\\local-code\\client\\config.py', '.'), ('C:\\graphics\\local-code\\client\\scanner.py', '.'), ('C:\\graphics\\local-code\\client\\chunker.py', '.'), ('C:\\graphics\\local-code\\client\\storage.py', '.'), ('C:\\graphics\\local-code\\client\\version.py', '.'), ('C:\\graphics\\local-code\\client\\updater.py', '.'), ('C:\\graphics\\local-code\\client\\claude_client.py', '.'), ('C:\\graphics\\local-code\\client\\display.py', '.'), ('C:\\graphics\\local-code\\client\\requirements.txt', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

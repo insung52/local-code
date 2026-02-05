@@ -4,6 +4,7 @@ import sys
 import os
 import signal
 import threading
+import time
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
@@ -21,11 +22,85 @@ from storage import SummaryStore, VectorStore, ConversationHistory
 from agent import agent_chat, get_system_prompt
 from version import VERSION
 from claude_client import ClaudeClient, test_cli_available
+from display import StatusInfo, set_status_info
 
 console = Console()
 
 # 전역 중지 플래그
 stop_requested = False
+
+
+# 상태 업데이터 (백그라운드 스레드) - 터미널 제목 갱신
+class StatusUpdater:
+    """10초마다 서버 상태를 가져와서 터미널 제목 갱신"""
+
+    def __init__(self, client: APIClient, status_info: StatusInfo, interval: int = 5):
+        self.client = client
+        self.status_info = status_info
+        self.interval = interval
+        self.running = False
+        self.thread = None
+        self._loop = None
+
+    async def _fetch_status(self):
+        """서버에서 상태 가져오기"""
+        try:
+            health = await self.client.health_check()
+
+            # 메모리 상태
+            memory = health.get("memory", {})
+            ram_total = memory.get("total_gb", 0)
+            available = memory.get("available_gb", 0)
+            ram_used = ram_total - available
+
+            # Ollama 상태
+            ollama = health.get("ollama", {})
+            ollama_connected = ollama.get("status") == "connected"
+            model = ollama.get("model", "")
+
+            # status_info에 업데이트
+            self.status_info.update_server_status(
+                ram_used, ram_total, ollama_connected, model
+            )
+
+            # 터미널 제목 갱신
+            self.status_info.update_title()
+
+        except Exception:
+            pass
+
+    def _run_loop(self):
+        """백그라운드 루프"""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        while self.running:
+            try:
+                self._loop.run_until_complete(self._fetch_status())
+            except Exception:
+                pass
+
+            # interval 동안 대기 (1초씩 체크해서 빠른 종료 가능)
+            for _ in range(self.interval):
+                if not self.running:
+                    break
+                time.sleep(1)
+
+        self._loop.close()
+
+    def start(self):
+        """업데이터 시작"""
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        """업데이터 중지"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
 
 
 def signal_handler(signum, frame):
@@ -43,10 +118,7 @@ def ensure_config() -> tuple[str, str]:
     if not server_url or not api_key:
         console.print("[yellow]Setup required.[/yellow]\n")
 
-        server_url = Prompt.ask(
-            "Server URL",
-            default="http://100.104.99.20:8000"
-        )
+        server_url = Prompt.ask("Server URL", default="http://100.104.99.20:8000")
         api_key = Prompt.ask("API Key")
 
         config = get_global_config()
@@ -75,6 +147,7 @@ def check_update_background():
     global update_info_cache
     try:
         from updater import check_for_update
+
         update_info_cache = check_for_update()
     except Exception:
         pass
@@ -92,7 +165,12 @@ def show_update_notice():
 
 def perform_update_interactive():
     """대화형 업데이트 수행"""
-    from updater import check_for_update, find_installer_asset, download_installer, run_installer
+    from updater import (
+        check_for_update,
+        find_installer_asset,
+        download_installer,
+        run_installer,
+    )
 
     console.print("[bold]Checking for updates...[/bold]")
 
@@ -146,28 +224,44 @@ def perform_update_interactive():
         console.print("[red]Failed to start installer[/red]")
 
 
-async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool = False):
+async def run_agent_chat(
+    client: APIClient, base_path: Path, continue_chat: bool = False
+):
     """에이전트 대화 모드"""
     global stop_requested
 
     history = ConversationHistory(base_path)
 
+    # 상태 정보 생성
+    status_info = StatusInfo()
+    status_info.server_url = get_server_url()
+    set_status_info(status_info)
+
+    # 상태 업데이터 시작 (터미널 제목 갱신, 5초마다)
+    status_updater = StatusUpdater(client, status_info, interval=5)
+    status_updater.start()
+
     # Claude 설정
-    claude_enabled = False
-    claude_client = None
     config = get_global_config()
     claude_mode = config.get("claude_mode", "cli")
     claude_api_key = config.get("claude_api_key", "")
+    claude_client = None
 
     # Claude 클라이언트 초기화
     if claude_mode == "cli":
-        # CLI 모드는 API 키 불필요
         if test_cli_available():
             claude_client = ClaudeClient(mode="cli")
     elif claude_mode == "api" and claude_api_key:
         claude_client = ClaudeClient(mode="api", api_key=claude_api_key)
 
-    # 프로젝트 요약 로드 (있으면)
+    # Claude enabled 상태 로드 (클라이언트가 있을 때만)
+    claude_enabled = config.get("claude_enabled", False) and claude_client is not None
+
+    # 상태 정보에 Claude 상태 설정
+    status_info.set_claude_status(claude_enabled, claude_mode)
+    status_info.update_title()
+
+    # 프로젝트 요약 로드
     summaries = []
     try:
         summary_store = SummaryStore(base_path)
@@ -176,11 +270,13 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
         pass
 
     # 터미널 클리어
-    os.system('cls' if os.name == 'nt' else 'clear')
+    os.system("cls" if os.name == "nt" else "clear")
 
     # 시스템 프롬프트 (이전 요약 포함)
     prev_summary = history.get_summary()
-    system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=claude_enabled)
+    system_prompt = get_system_prompt(
+        summaries, prev_summary, claude_enabled=claude_enabled
+    )
     messages = [{"role": "system", "content": system_prompt}]
 
     # -c 옵션이면 이전 대화 로드
@@ -189,7 +285,9 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
         if prev_messages:
             # 헤더 출력
             console.print("[bold]Agent Mode[/bold] [dim](continued)[/dim]")
-            console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+            console.print(
+                "[dim]Commands: /quit, /clear, /scan, /status, /include <path>[/dim]"
+            )
             if summaries:
                 console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
             console.print()
@@ -203,7 +301,9 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
                     # Tool results는 생략
                     if content.startswith("Tool results:"):
                         continue
-                    console.print(f"[bold cyan]You[/bold cyan]: {content[:200]}{'...' if len(content) > 200 else ''}")
+                    console.print(
+                        f"[bold cyan]You[/bold cyan]: {content[:200]}{'...' if len(content) > 200 else ''}"
+                    )
                 elif role == "assistant":
                     # 긴 응답은 줄이기
                     display = content[:300] + "..." if len(content) > 300 else content
@@ -214,14 +314,18 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
         else:
             # 이전 대화 없음
             console.print("[bold]Agent Mode[/bold]")
-            console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+            console.print(
+                "[dim]Commands: /quit, /clear, /scan, /status, /include <path>[/dim]"
+            )
             if summaries:
                 console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
             console.print("[dim]No previous conversation[/dim]")
     else:
         # 새 대화
         console.print("[bold]Agent Mode[/bold]")
-        console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+        console.print(
+            "[dim]Commands: /quit, /clear, /scan, /status, /include <path>[/dim]"
+        )
         if summaries:
             console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
         history.clear()
@@ -262,41 +366,72 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
             # 요약 다시 로드
             try:
                 summaries = SummaryStore(base_path).get_all_summaries()
-                system_prompt = get_system_prompt(summaries, claude_enabled=claude_enabled)
+                system_prompt = get_system_prompt(
+                    summaries, claude_enabled=claude_enabled
+                )
                 messages[0] = {"role": "system", "content": system_prompt}
             except Exception:
                 pass
             continue
 
+        if cmd.lower() == "/status":
+            console.print(status_info.get_detailed_status())
+            continue
+
         if cmd.lower() == "/claude on":
             if not claude_client:
                 if claude_mode == "cli":
-                    console.print("[red]Claude CLI not available. Install Claude Code first.[/red]")
+                    console.print(
+                        "[red]Claude CLI not available. Install Claude Code first.[/red]"
+                    )
                 else:
-                    console.print("[red]Claude API key not set. Run: llmcode --config[/red]")
+                    console.print(
+                        "[red]Claude API key not set. Run: llmcode --config[/red]"
+                    )
             else:
                 claude_enabled = True
-                # 시스템 프롬프트 업데이트
-                system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=True)
+                system_prompt = get_system_prompt(
+                    summaries, prev_summary, claude_enabled=True
+                )
                 messages[0] = {"role": "system", "content": system_prompt}
-                mode_str = "CLI" if claude_mode == "cli" else "API"
+                mode_str = "CODE" if claude_mode == "cli" else "API"
                 console.print(f"[green]Claude enabled ({mode_str} mode)[/green]")
+                # 상태 저장 및 갱신
+                status_info.set_claude_status(True, claude_mode)
+                status_info.update_title()
+                config["claude_enabled"] = True
+                save_global_config(config)
             continue
 
         if cmd.lower() == "/claude off":
             claude_enabled = False
-            system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=False)
+            system_prompt = get_system_prompt(
+                summaries, prev_summary, claude_enabled=False
+            )
             messages[0] = {"role": "system", "content": system_prompt}
-            console.print("[dim]Claude API disabled[/dim]")
+            console.print("[dim]Claude disabled[/dim]")
+            # 상태 저장 및 갱신
+            status_info.set_claude_status(False, claude_mode)
+            status_info.update_title()
+            config["claude_enabled"] = False
+            save_global_config(config)
             continue
 
         if cmd.lower() == "/claude":
             status = "[green]ON[/green]" if claude_enabled else "[dim]OFF[/dim]"
-            mode_str = claude_mode.upper()
+            mode_str = "CODE" if claude_mode == "cli" else "API"
             if claude_mode == "cli":
-                avail = "[green]available[/green]" if claude_client else "[red]not found[/red]"
+                avail = (
+                    "[green]available[/green]"
+                    if claude_client
+                    else "[red]not found[/red]"
+                )
             else:
-                avail = "[green]configured[/green]" if claude_api_key else "[red]no key[/red]"
+                avail = (
+                    "[green]configured[/green]"
+                    if claude_api_key
+                    else "[red]no key[/red]"
+                )
             console.print(f"Claude: {status} | Mode: {mode_str} ({avail})")
             console.print("[dim]Usage: /claude on, /claude off[/dim]")
             continue
@@ -306,20 +441,28 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
             try:
                 full_path = base_path / include_path
                 if full_path.is_file():
-                    content = full_path.read_text(encoding='utf-8', errors='replace')
-                    messages.append({
-                        "role": "user",
-                        "content": f"[File added to context: {include_path}]\n```\n{content[:5000]}\n```"
-                    })
+                    content = full_path.read_text(encoding="utf-8", errors="replace")
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[File added to context: {include_path}]\n```\n{content[:5000]}\n```",
+                        }
+                    )
                     console.print(f"[green]Added: {include_path}[/green]")
                 elif full_path.is_dir():
                     files = list(full_path.rglob("*"))[:10]
-                    file_list = [str(f.relative_to(base_path)) for f in files if f.is_file()]
-                    messages.append({
-                        "role": "user",
-                        "content": f"[Directory added: {include_path}]\nFiles: {', '.join(file_list)}"
-                    })
-                    console.print(f"[green]Added directory: {include_path} ({len(file_list)} files)[/green]")
+                    file_list = [
+                        str(f.relative_to(base_path)) for f in files if f.is_file()
+                    ]
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[Directory added: {include_path}]\nFiles: {', '.join(file_list)}",
+                        }
+                    )
+                    console.print(
+                        f"[green]Added directory: {include_path} ({len(file_list)} files)[/green]"
+                    )
                 else:
                     console.print(f"[red]Not found: {include_path}[/red]")
             except Exception as e:
@@ -371,6 +514,10 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
 
         console.print()
 
+    # 종료 시 정리
+    status_updater.stop()
+    set_status_info(None)
+
 
 async def run_scan(client: APIClient, base_path: Path):
     """프로젝트 스캔"""
@@ -400,7 +547,9 @@ async def run_scan(client: APIClient, base_path: Path):
         console.print(f"[dim]Summarizing {len(files_to_summarize)} files...[/dim]")
 
         for i, (file_data, content_hash) in enumerate(files_to_summarize):
-            console.print(f"  [{i+1}/{len(files_to_summarize)}] {file_data['path']}", end=" ")
+            console.print(
+                f"  [{i+1}/{len(files_to_summarize)}] {file_data['path']}", end=" "
+            )
 
             summary_text = ""
             try:
@@ -413,7 +562,7 @@ async def run_scan(client: APIClient, base_path: Path):
                         file_data["path"],
                         content_hash,
                         summary_text,
-                        file_data.get("language", "text")
+                        file_data.get("language", "text"),
                     )
                     console.print("[green]OK[/green]")
             except Exception as e:
@@ -425,7 +574,7 @@ async def run_scan(client: APIClient, base_path: Path):
 
     batch_size = 20
     for i in range(0, len(chunks), batch_size):
-        batch = chunks[i:i + batch_size]
+        batch = chunks[i : i + batch_size]
         texts = [c["content"] for c in batch]
 
         try:
@@ -451,7 +600,7 @@ async def run_single_query(client: APIClient, prompt: str, base_path: Path):
     system_prompt = get_system_prompt()
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt}
+        {"role": "user", "content": prompt},
     ]
 
     console.print("[bold green]Assistant[/bold green]\n")
@@ -464,12 +613,22 @@ async def run_single_query(client: APIClient, prompt: str, base_path: Path):
 @click.command()
 @click.argument("prompt", required=False)
 @click.option("--scan", "-s", is_flag=True, help="Scan project first")
-@click.option("--path", "-p", type=click.Path(exists=True), default=".", help="Project path")
-@click.option("--continue", "-c", "continue_chat", is_flag=True, help="Continue previous conversation")
+@click.option(
+    "--path", "-p", type=click.Path(exists=True), default=".", help="Project path"
+)
+@click.option(
+    "--continue",
+    "-c",
+    "continue_chat",
+    is_flag=True,
+    help="Continue previous conversation",
+)
 @click.option("--config", is_flag=True, help="Reconfigure")
 @click.option("--update", "-u", is_flag=True, help="Check and install updates")
 @click.version_option(version=VERSION)
-def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, update: bool):
+def cli(
+    prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, update: bool
+):
     """
     Local Code Assistant - AI Code Agent
 
@@ -496,7 +655,9 @@ def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, u
 
     if config:
         console.print("[yellow]Reconfiguring...[/yellow]\n")
-        server_url = Prompt.ask("Server URL", default=get_server_url() or "http://100.104.99.20:8000")
+        server_url = Prompt.ask(
+            "Server URL", default=get_server_url() or "http://100.104.99.20:8000"
+        )
         api_key = Prompt.ask("API Key (local server)", default=get_api_key() or "")
 
         cfg = get_global_config()
@@ -510,21 +671,27 @@ def cli(prompt: str, scan: bool, path: str, continue_chat: bool, config: bool, u
         if cli_available:
             console.print("[green]✓ Claude CLI available[/green]")
         else:
-            console.print("[yellow]✗ Claude CLI not found (install Claude Code first)[/yellow]")
+            console.print(
+                "[yellow]✗ Claude CLI not found (install Claude Code first)[/yellow]"
+            )
 
-        console.print("\n[dim]1. CLI mode - uses 'claude -p' command (Pro subscription)[/dim]")
+        console.print(
+            "\n[dim]1. CLI mode - uses 'claude -p' command (Pro subscription)[/dim]"
+        )
         console.print("[dim]2. API mode - uses Anthropic API (requires credits)[/dim]")
 
         mode_choice = Prompt.ask(
             "Claude mode",
             choices=["1", "2", "skip"],
-            default="1" if current_mode == "cli" else "2"
+            default="1" if current_mode == "cli" else "2",
         )
 
         if mode_choice == "1":
             cfg["claude_mode"] = "cli"
             if not cli_available:
-                console.print("[yellow]Warning: Claude CLI not detected. Install Claude Code first.[/yellow]")
+                console.print(
+                    "[yellow]Warning: Claude CLI not detected. Install Claude Code first.[/yellow]"
+                )
         elif mode_choice == "2":
             cfg["claude_mode"] = "api"
             claude_key = cfg.get("claude_api_key", "")
