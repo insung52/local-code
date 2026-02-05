@@ -77,11 +77,8 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
     except Exception:
         pass
 
-    console.print("[bold]Agent Mode[/bold]")
-    console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
-
-    if summaries:
-        console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
+    # 터미널 클리어
+    os.system('cls' if os.name == 'nt' else 'clear')
 
     # 시스템 프롬프트 (이전 요약 포함)
     prev_summary = history.get_summary()
@@ -92,12 +89,12 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
     if continue_chat:
         prev_messages = history.get_messages(limit=20)
         if prev_messages:
-            # 터미널 클리어
-            os.system('cls' if os.name == 'nt' else 'clear')
-
-            # 헤더 다시 출력
+            # 헤더 출력
             console.print("[bold]Agent Mode[/bold] [dim](continued)[/dim]")
-            console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]\n")
+            console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+            if summaries:
+                console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
+            console.print()
 
             # 이전 대화 표시
             for msg in prev_messages:
@@ -117,11 +114,19 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
             messages.extend(prev_messages)
             console.print(f"\n[dim]--- {len(prev_messages)} messages loaded ---[/dim]")
         else:
+            # 이전 대화 없음
+            console.print("[bold]Agent Mode[/bold]")
+            console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+            if summaries:
+                console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
             console.print("[dim]No previous conversation[/dim]")
     else:
-        # 새 대화 - 히스토리 클리어
+        # 새 대화
+        console.print("[bold]Agent Mode[/bold]")
+        console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
+        if summaries:
+            console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
         history.clear()
-        console.print("[dim]New conversation[/dim]")
 
     console.print()
 
