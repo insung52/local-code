@@ -112,6 +112,20 @@ async def agent_chat(
         # LLM 호출
         full_response = ""
         stopped = False
+        in_think_mode = False  # <think> 태그 추적
+        buffer = ""  # 태그 감지용 버퍼
+
+        # ANSI 코드 (dim/reset)
+        DIM = "\033[2m"
+        RESET = "\033[0m"
+
+        def print_raw(text, dim=False):
+            """ANSI 코드로 직접 출력"""
+            if dim:
+                sys.stdout.write(DIM + text + RESET)
+            else:
+                sys.stdout.write(text)
+            sys.stdout.flush()
 
         try:
             async for chunk in client.chat_stream(messages, model=model):
@@ -126,7 +140,44 @@ async def agent_chat(
                 if chunk_type == "token":
                     content = chunk.get("content", "")
                     full_response += content
-                    console.print(content, end="")
+                    buffer += content
+
+                    # <think> 태그 감지
+                    while True:
+                        if not in_think_mode:
+                            # <think> 시작 찾기
+                            think_start = buffer.find("<think>")
+                            if think_start != -1:
+                                # <think> 이전 내용 출력
+                                before = buffer[:think_start]
+                                if before:
+                                    print_raw(before)
+                                in_think_mode = True
+                                buffer = buffer[think_start + 7:]  # <think> 제거
+                            else:
+                                # 태그 없으면 버퍼 일부 출력 (태그 잘림 방지)
+                                if len(buffer) > 10:
+                                    safe = buffer[:-10]
+                                    print_raw(safe)
+                                    buffer = buffer[-10:]
+                                break
+                        else:
+                            # </think> 종료 찾기
+                            think_end = buffer.find("</think>")
+                            if think_end != -1:
+                                # thinking 내용 dim으로 출력
+                                thinking = buffer[:think_end]
+                                if thinking:
+                                    print_raw(thinking, dim=True)
+                                in_think_mode = False
+                                buffer = buffer[think_end + 8:]  # </think> 제거
+                            else:
+                                # 태그 없으면 버퍼 일부 출력
+                                if len(buffer) > 10:
+                                    safe = buffer[:-10]
+                                    print_raw(safe, dim=in_think_mode)
+                                    buffer = buffer[-10:]
+                                break
 
                 elif chunk_type == "error":
                     console.print(f"\n[red]Error: {chunk.get('message')}[/red]")
@@ -134,7 +185,10 @@ async def agent_chat(
                     return full_response, messages
 
                 elif chunk_type == "done":
-                    pass
+                    # 남은 버퍼 출력
+                    if buffer:
+                        print_raw(buffer, dim=in_think_mode)
+                        buffer = ""
 
         except Exception as e:
             console.print(f"\n[red]Error: {e}[/red]")
