@@ -4,6 +4,7 @@ import sys
 import os
 import signal
 import threading
+import time
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
@@ -21,11 +22,79 @@ from storage import SummaryStore, VectorStore, ConversationHistory
 from agent import agent_chat, get_system_prompt
 from version import VERSION
 from claude_client import ClaudeClient, test_cli_available
+from display import TerminalDisplay, StatusBar, get_display, set_display, get_status_bar, set_status_bar
 
 console = Console()
 
 # 전역 중지 플래그
 stop_requested = False
+
+
+# 상태 업데이터 (백그라운드 스레드)
+class StatusUpdater:
+    """10초마다 서버 상태를 가져와서 StatusBar에 업데이트"""
+
+    def __init__(self, client: APIClient, status_bar: StatusBar, interval: int = 10):
+        self.client = client
+        self.status_bar = status_bar
+        self.interval = interval
+        self.running = False
+        self.thread = None
+        self._loop = None
+
+    async def _fetch_status(self):
+        """서버에서 상태 가져오기"""
+        try:
+            health = await self.client.health_check()
+
+            # 메모리 상태
+            memory = health.get("memory", {})
+            ram_total = memory.get("total_gb", 0)
+            available = memory.get("available_gb", 0)
+            ram_used = ram_total - available
+
+            # Ollama 상태
+            ollama = health.get("ollama", {})
+            ollama_connected = ollama.get("status") == "connected"
+
+            # status_bar에 업데이트
+            self.status_bar.update_server_status(ram_used, ram_total, ollama_connected)
+
+        except Exception:
+            pass
+
+    def _run_loop(self):
+        """백그라운드 루프"""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        while self.running:
+            try:
+                self._loop.run_until_complete(self._fetch_status())
+            except Exception:
+                pass
+
+            # interval 동안 대기 (1초씩 체크)
+            for _ in range(self.interval):
+                if not self.running:
+                    break
+                time.sleep(1)
+
+        self._loop.close()
+
+    def start(self):
+        """업데이터 시작"""
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        """업데이터 중지"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
 
 
 def signal_handler(signum, frame):
@@ -147,10 +216,21 @@ def perform_update_interactive():
 
 
 async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool = False):
-    """에이전트 대화 모드"""
+    """에이전트 대화 모드 (터미널 하단 고정 상태바)"""
     global stop_requested
 
     history = ConversationHistory(base_path)
+
+    # 상태바 생성
+    status_bar = StatusBar()
+    set_status_bar(status_bar)
+
+    # TerminalDisplay 생성
+    display = TerminalDisplay()
+    set_display(display)
+
+    # 상태 업데이터 (display 대신 status_bar 사용)
+    status_updater = StatusUpdater(client, status_bar, interval=10)
 
     # Claude 설정
     claude_enabled = False
@@ -159,15 +239,17 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
     claude_mode = config.get("claude_mode", "cli")
     claude_api_key = config.get("claude_api_key", "")
 
+    # 상태바에 Claude 모드 설정
+    status_bar.set_claude_status(claude_enabled, claude_mode)
+
     # Claude 클라이언트 초기화
     if claude_mode == "cli":
-        # CLI 모드는 API 키 불필요
         if test_cli_available():
             claude_client = ClaudeClient(mode="cli")
     elif claude_mode == "api" and claude_api_key:
         claude_client = ClaudeClient(mode="api", api_key=claude_api_key)
 
-    # 프로젝트 요약 로드 (있으면)
+    # 프로젝트 요약 로드
     summaries = []
     try:
         summary_store = SummaryStore(base_path)
@@ -178,198 +260,198 @@ async def run_agent_chat(client: APIClient, base_path: Path, continue_chat: bool
     # 터미널 클리어
     os.system('cls' if os.name == 'nt' else 'clear')
 
-    # 시스템 프롬프트 (이전 요약 포함)
+    # 시스템 프롬프트
     prev_summary = history.get_summary()
     system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=claude_enabled)
     messages = [{"role": "system", "content": system_prompt}]
 
-    # -c 옵션이면 이전 대화 로드
+    # 헤더 출력 (Live 시작 전)
     if continue_chat:
         prev_messages = history.get_messages(limit=20)
         if prev_messages:
-            # 헤더 출력
             console.print("[bold]Agent Mode[/bold] [dim](continued)[/dim]")
             console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
             if summaries:
                 console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
             console.print()
 
-            # 이전 대화 표시
             for msg in prev_messages:
                 role = msg.get("role")
                 content = msg.get("content", "")
-
-                if role == "user":
-                    # Tool results는 생략
-                    if content.startswith("Tool results:"):
-                        continue
+                if role == "user" and not content.startswith("Tool results:"):
                     console.print(f"[bold cyan]You[/bold cyan]: {content[:200]}{'...' if len(content) > 200 else ''}")
                 elif role == "assistant":
-                    # 긴 응답은 줄이기
-                    display = content[:300] + "..." if len(content) > 300 else content
-                    console.print(f"[bold green]Assistant[/bold green]: {display}")
+                    disp = content[:300] + "..." if len(content) > 300 else content
+                    console.print(f"[bold green]Assistant[/bold green]: {disp}")
 
             messages.extend(prev_messages)
             console.print(f"\n[dim]--- {len(prev_messages)} messages loaded ---[/dim]")
         else:
-            # 이전 대화 없음
             console.print("[bold]Agent Mode[/bold]")
             console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
             if summaries:
                 console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
             console.print("[dim]No previous conversation[/dim]")
     else:
-        # 새 대화
         console.print("[bold]Agent Mode[/bold]")
         console.print("[dim]Commands: /quit, /clear, /scan, /include <path>[/dim]")
         if summaries:
             console.print(f"[dim]Project indexed: {len(summaries)} files[/dim]")
         history.clear()
 
-    # 업데이트 알림 (모든 출력 후)
     show_update_notice()
 
-    console.print()
+    # TerminalDisplay 시작 (상태바 콜백 등록)
+    display.start(status_callback=status_bar.render)
+    status_updater.start()
 
-    while True:
-        stop_requested = False
+    try:
+        while True:
+            stop_requested = False
 
-        try:
-            user_input = Prompt.ask("\n[bold cyan]You[/bold cyan]")
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Bye![/dim]")
-            break
-
-        if not user_input.strip():
-            continue
-
-        cmd = user_input.strip()
-
-        # 명령어 처리
-        if cmd.lower() == "/quit":
-            console.print("[dim]Bye![/dim]")
-            break
-
-        if cmd.lower() == "/clear":
-            history.clear()
-            messages = [{"role": "system", "content": system_prompt}]
-            console.print("[dim]History cleared[/dim]")
-            continue
-
-        if cmd.lower() == "/scan":
-            console.print("[dim]Scanning project...[/dim]")
-            await run_scan(client, base_path)
-            # 요약 다시 로드
+            # 입력 받기 (display.print 대신 일반 input 사용 - 상태바는 백그라운드에서 갱신됨)
             try:
-                summaries = SummaryStore(base_path).get_all_summaries()
-                system_prompt = get_system_prompt(summaries, claude_enabled=claude_enabled)
-                messages[0] = {"role": "system", "content": system_prompt}
-            except Exception:
-                pass
-            continue
+                sys.stdout.write("\nYou: ")
+                sys.stdout.flush()
+                user_input = input()
+            except (KeyboardInterrupt, EOFError):
+                display.print("\nBye!")
+                break
 
-        if cmd.lower() == "/claude on":
-            if not claude_client:
-                if claude_mode == "cli":
-                    console.print("[red]Claude CLI not available. Install Claude Code first.[/red]")
-                else:
-                    console.print("[red]Claude API key not set. Run: llmcode --config[/red]")
-            else:
-                claude_enabled = True
-                # 시스템 프롬프트 업데이트
-                system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=True)
-                messages[0] = {"role": "system", "content": system_prompt}
-                mode_str = "CLI" if claude_mode == "cli" else "API"
-                console.print(f"[green]Claude enabled ({mode_str} mode)[/green]")
-            continue
+            if not user_input.strip():
+                continue
 
-        if cmd.lower() == "/claude off":
-            claude_enabled = False
-            system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=False)
-            messages[0] = {"role": "system", "content": system_prompt}
-            console.print("[dim]Claude API disabled[/dim]")
-            continue
+            cmd = user_input.strip()
 
-        if cmd.lower() == "/claude":
-            status = "[green]ON[/green]" if claude_enabled else "[dim]OFF[/dim]"
-            mode_str = claude_mode.upper()
-            if claude_mode == "cli":
-                avail = "[green]available[/green]" if claude_client else "[red]not found[/red]"
-            else:
-                avail = "[green]configured[/green]" if claude_api_key else "[red]no key[/red]"
-            console.print(f"Claude: {status} | Mode: {mode_str} ({avail})")
-            console.print("[dim]Usage: /claude on, /claude off[/dim]")
-            continue
+            # 명령어 처리
+            if cmd.lower() == "/quit":
+                display.print("Bye!")
+                break
 
-        if cmd.lower().startswith("/include "):
-            include_path = cmd[9:].strip()
-            try:
-                full_path = base_path / include_path
-                if full_path.is_file():
-                    content = full_path.read_text(encoding='utf-8', errors='replace')
-                    messages.append({
-                        "role": "user",
-                        "content": f"[File added to context: {include_path}]\n```\n{content[:5000]}\n```"
-                    })
-                    console.print(f"[green]Added: {include_path}[/green]")
-                elif full_path.is_dir():
-                    files = list(full_path.rglob("*"))[:10]
-                    file_list = [str(f.relative_to(base_path)) for f in files if f.is_file()]
-                    messages.append({
-                        "role": "user",
-                        "content": f"[Directory added: {include_path}]\nFiles: {', '.join(file_list)}"
-                    })
-                    console.print(f"[green]Added directory: {include_path} ({len(file_list)} files)[/green]")
-                else:
-                    console.print(f"[red]Not found: {include_path}[/red]")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-            continue
-
-        # 사용자 메시지 추가
-        messages.append({"role": "user", "content": user_input})
-        history.add_message("user", user_input)
-
-        console.print("\n[bold green]Assistant[/bold green]")
-
-        # 에이전트 루프 실행
-        response, messages = await agent_chat(
-            client,
-            messages,
-            base_path,
-            claude_enabled=claude_enabled,
-            claude_approved=False,  # 새 요청마다 리셋
-            claude_client=claude_client,
-        )
-
-        # 응답 저장
-        if response:
-            history.add_message("assistant", response)
-
-        # 대화 압축 체크
-        if history.needs_compression():
-            to_compress = history.compress(keep_recent=6)
-            if to_compress:
-                # 압축된 메시지 간단 요약 생성
-                summary_parts = []
-                for m in to_compress[-4:]:  # 최근 4개만
-                    role = "User" if m["role"] == "user" else "Assistant"
-                    content = m["content"][:100]
-                    summary_parts.append(f"{role}: {content}...")
-
-                new_summary = history.get_summary()
-                if new_summary:
-                    new_summary += "\n---\n"
-                new_summary += "\n".join(summary_parts)
-                history.set_summary(new_summary[-2000:])  # 2000자 제한
-
-                # 메시지 리스트도 재구성
-                system_prompt = get_system_prompt(summaries, history.get_summary())
+            if cmd.lower() == "/clear":
+                history.clear()
                 messages = [{"role": "system", "content": system_prompt}]
-                messages.extend(history.get_messages())
-                console.print("[dim]Conversation compressed[/dim]")
+                display.print("History cleared")
+                continue
 
-        console.print()
+            if cmd.lower() == "/scan":
+                display.print("Scanning project...")
+                await run_scan(client, base_path)
+                try:
+                    summaries = SummaryStore(base_path).get_all_summaries()
+                    system_prompt = get_system_prompt(summaries, claude_enabled=claude_enabled)
+                    messages[0] = {"role": "system", "content": system_prompt}
+                except Exception:
+                    pass
+                continue
+
+            if cmd.lower() == "/claude on":
+                if not claude_client:
+                    if claude_mode == "cli":
+                        display.print("Claude CLI not available. Install Claude Code first.")
+                    else:
+                        display.print("Claude API key not set. Run: llmcode --config")
+                else:
+                    claude_enabled = True
+                    system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=True)
+                    messages[0] = {"role": "system", "content": system_prompt}
+                    mode_str = "CLI" if claude_mode == "cli" else "API"
+                    display.print(f"Claude enabled ({mode_str} mode)")
+                    status_bar.set_claude_status(True, claude_mode)
+                continue
+
+            if cmd.lower() == "/claude off":
+                claude_enabled = False
+                system_prompt = get_system_prompt(summaries, prev_summary, claude_enabled=False)
+                messages[0] = {"role": "system", "content": system_prompt}
+                display.print("Claude disabled")
+                status_bar.set_claude_status(False, claude_mode)
+                continue
+
+            if cmd.lower() == "/claude":
+                status = "ON" if claude_enabled else "OFF"
+                mode_str = claude_mode.upper()
+                if claude_mode == "cli":
+                    avail = "available" if claude_client else "not found"
+                else:
+                    avail = "configured" if claude_api_key else "no key"
+                display.print(f"Claude: {status} | Mode: {mode_str} ({avail})")
+                display.print("Usage: /claude on, /claude off")
+                continue
+
+            if cmd.lower().startswith("/include "):
+                include_path = cmd[9:].strip()
+                try:
+                    full_path = base_path / include_path
+                    if full_path.is_file():
+                        content = full_path.read_text(encoding='utf-8', errors='replace')
+                        messages.append({
+                            "role": "user",
+                            "content": f"[File added to context: {include_path}]\n```\n{content[:5000]}\n```"
+                        })
+                        display.print(f"Added: {include_path}")
+                    elif full_path.is_dir():
+                        files = list(full_path.rglob("*"))[:10]
+                        file_list = [str(f.relative_to(base_path)) for f in files if f.is_file()]
+                        messages.append({
+                            "role": "user",
+                            "content": f"[Directory added: {include_path}]\nFiles: {', '.join(file_list)}"
+                        })
+                        display.print(f"Added directory: {include_path} ({len(file_list)} files)")
+                    else:
+                        display.print(f"Not found: {include_path}")
+                except Exception as e:
+                    display.print(f"Error: {e}")
+                continue
+
+            # 사용자 메시지 추가
+            messages.append({"role": "user", "content": user_input})
+            history.add_message("user", user_input)
+
+            display.print("\nAssistant:")
+
+            # 에이전트 루프 실행
+            response, messages = await agent_chat(
+                client,
+                messages,
+                base_path,
+                claude_enabled=claude_enabled,
+                claude_approved=False,
+                claude_client=claude_client,
+                display=display,
+            )
+
+            # 응답 저장
+            if response:
+                history.add_message("assistant", response)
+
+            # 대화 압축 체크
+            if history.needs_compression():
+                to_compress = history.compress(keep_recent=6)
+                if to_compress:
+                    summary_parts = []
+                    for m in to_compress[-4:]:
+                        role = "User" if m["role"] == "user" else "Assistant"
+                        content = m["content"][:100]
+                        summary_parts.append(f"{role}: {content}...")
+
+                    new_summary = history.get_summary()
+                    if new_summary:
+                        new_summary += "\n---\n"
+                    new_summary += "\n".join(summary_parts)
+                    history.set_summary(new_summary[-2000:])
+
+                    system_prompt = get_system_prompt(summaries, history.get_summary())
+                    messages = [{"role": "system", "content": system_prompt}]
+                    messages.extend(history.get_messages())
+                    display.print("Conversation compressed")
+
+    finally:
+        # 종료 시 정리
+        status_updater.stop()
+        display.stop()
+        set_display(None)
+        set_status_bar(None)
 
 
 async def run_scan(client: APIClient, base_path: Path):

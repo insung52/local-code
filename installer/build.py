@@ -26,6 +26,7 @@ CLIENT_FILES = [
     "version.py",
     "updater.py",
     "claude_client.py",
+    "display.py",
 ]
 
 

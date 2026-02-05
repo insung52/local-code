@@ -3,6 +3,7 @@ import json
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -12,6 +13,7 @@ import difflib
 from api_client import APIClient
 from tools import parse_tool_calls, execute_tool, get_tools_prompt
 from config import get_default_model
+from display import TerminalDisplay, get_display
 
 console = Console()
 
@@ -95,6 +97,7 @@ async def agent_chat(
     claude_enabled: bool = False,
     claude_approved: bool = False,
     claude_client=None,
+    display: Optional[TerminalDisplay] = None,
 ) -> tuple[str, list[dict]]:
     """
     에이전트 루프 실행
@@ -103,10 +106,14 @@ async def agent_chat(
         claude_enabled: /claude on 상태인지
         claude_approved: 이번 요청에서 Claude 사용이 승인되었는지
         claude_client: ClaudeClient 인스턴스
+        display: TerminalDisplay 인스턴스 (스트리밍 출력용)
 
     Returns:
         (최종 응답 텍스트, 업데이트된 메시지 리스트)
     """
+    # display가 없으면 전역에서 가져오기
+    if display is None:
+        display = get_display()
     global stop_generation
     model = get_default_model()
     iteration = 0
@@ -131,6 +138,7 @@ async def agent_chat(
                     messages,
                     base_path,
                     model,
+                    display,
                 )
             else:
                 console.print("[dim]Claude 없이 진행합니다[/dim]")
@@ -147,24 +155,36 @@ async def agent_chat(
         in_think_mode = False  # <think> 태그 추적
         buffer = ""  # 태그 감지용 버퍼
 
-        # ANSI 코드 (dim/reset)
-        DIM = "\033[2m"
-        RESET = "\033[0m"
-
-        def print_raw(text, dim=False):
-            """ANSI 코드로 직접 출력"""
-            if dim:
-                sys.stdout.write(DIM + text + RESET)
+        def print_token(text, dim=False):
+            """토큰 출력 (TerminalDisplay 또는 fallback)"""
+            if display:
+                # dim 처리는 ANSI로
+                if dim:
+                    display.print_token("\033[2m" + text + "\033[0m")
+                else:
+                    display.print_token(text)
             else:
-                sys.stdout.write(text)
-            sys.stdout.flush()
+                # fallback to direct output
+                if dim:
+                    sys.stdout.write("\033[2m" + text + "\033[0m")
+                else:
+                    sys.stdout.write(text)
+                sys.stdout.flush()
+
+        def print_message(text, style=None):
+            """메시지 출력 (TerminalDisplay 또는 console)"""
+            if display:
+                display.print(text)
+            else:
+                console.print(f"[{style}]{text}[/{style}]" if style else text)
 
         try:
             async for chunk in client.chat_stream(messages, model=model):
                 # ESC 체크
                 if stop_generation:
                     stopped = True
-                    console.print("\n[yellow](Stopped)[/yellow]")
+                    print_message("(Stopped)", style="yellow")
+                    display.print("") if display else None
                     break
 
                 chunk_type = chunk.get("type")
@@ -177,53 +197,48 @@ async def agent_chat(
                     # <think> 태그 감지
                     while True:
                         if not in_think_mode:
-                            # <think> 시작 찾기
                             think_start = buffer.find("<think>")
                             if think_start != -1:
-                                # <think> 이전 내용 출력
                                 before = buffer[:think_start]
                                 if before:
-                                    print_raw(before)
+                                    print_token(before)
                                 in_think_mode = True
-                                buffer = buffer[think_start + 7:]  # <think> 제거
+                                buffer = buffer[think_start + 7:]
                             else:
-                                # 태그 없으면 버퍼 일부 출력 (태그 잘림 방지)
                                 if len(buffer) > 10:
                                     safe = buffer[:-10]
-                                    print_raw(safe)
+                                    print_token(safe)
                                     buffer = buffer[-10:]
                                 break
                         else:
-                            # </think> 종료 찾기
                             think_end = buffer.find("</think>")
                             if think_end != -1:
-                                # thinking 내용 dim으로 출력
                                 thinking = buffer[:think_end]
                                 if thinking:
-                                    print_raw(thinking, dim=True)
+                                    print_token(thinking, dim=True)
                                 in_think_mode = False
-                                buffer = buffer[think_end + 8:]  # </think> 제거
+                                buffer = buffer[think_end + 8:]
                             else:
-                                # 태그 없으면 버퍼 일부 출력
                                 if len(buffer) > 10:
                                     safe = buffer[:-10]
-                                    print_raw(safe, dim=in_think_mode)
+                                    print_token(safe, dim=in_think_mode)
                                     buffer = buffer[-10:]
                                 break
 
                 elif chunk_type == "error":
-                    console.print(f"\n[red]Error: {chunk.get('message')}[/red]")
+                    print_message(f"Error: {chunk.get('message')}", style="red")
+                    display.print("") if display else None
                     stop_generation = True
                     return full_response, messages
 
                 elif chunk_type == "done":
-                    # 남은 버퍼 출력
                     if buffer:
-                        print_raw(buffer, dim=in_think_mode)
+                        print_token(buffer, dim=in_think_mode)
                         buffer = ""
 
         except Exception as e:
-            console.print(f"\n[red]Error: {e}[/red]")
+            print_message(f"Error: {e}", style="red")
+            display.print("") if display else None
             stop_generation = True
             return full_response, messages
 
@@ -261,6 +276,7 @@ async def agent_chat(
                         messages,
                         base_path,
                         model,
+                        display,
                     )
                     return response, messages
                 else:
@@ -268,11 +284,18 @@ async def agent_chat(
 
         if not tool_calls:
             # 도구 호출 없음 = 최종 응답
-            console.print()  # 줄바꿈
+            if display:
+                display.print("")
+            else:
+                console.print()
             return full_response, messages
 
         # 도구 실행
-        console.print("\n")
+        if display:
+            display.print("")
+            display.print("")
+        else:
+            console.print("\n")
 
         # assistant 메시지 추가
         messages.append({"role": "assistant", "content": full_response})
@@ -443,6 +466,7 @@ async def run_with_claude(
     messages: list,
     base_path: Path,
     model: str,
+    display: Optional[TerminalDisplay] = None,
 ) -> tuple[str, list]:
     """
     Claude supervisor 모드로 실행 (async)
@@ -490,7 +514,7 @@ Execute these steps using available tools. After completing, summarize what was 
 
     # 로컬 LLM 실행 (agent_chat 재사용, claude 비활성)
     response, messages = await agent_chat(
-        local_client, messages, base_path, claude_enabled=False, claude_approved=False
+        local_client, messages, base_path, claude_enabled=False, claude_approved=False, display=display
     )
 
     # Claude에게 결과 검토 요청
@@ -515,7 +539,7 @@ Execute these steps using available tools. After completing, summarize what was 
             console.print("\n[bold green]Local LLM[/bold green] Continuing...")
 
             response, messages = await agent_chat(
-                local_client, messages, base_path, claude_enabled=False, claude_approved=False
+                local_client, messages, base_path, claude_enabled=False, claude_approved=False, display=display
             )
 
     final_response = f"{response}\n\n[Claude feedback: {feedback}]"
