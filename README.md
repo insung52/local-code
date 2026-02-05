@@ -38,7 +38,8 @@ A local LLM-powered code assistant CLI, similar to Claude Code but running on yo
 
 1. Download `llmcode-setup.exe` from [Releases](https://github.com/YOUR_USERNAME/local-code/releases)
 2. Run the installer
-3. Open a new terminal and run `llmcode`
+   - **Note**: Your browser/Windows may show a security warning because the exe is not code-signed. Click "Keep" → "More info" → "Run anyway" to proceed.
+3. Open a **new** terminal and run `llmcode`
 
 ### Option 2: From Source
 

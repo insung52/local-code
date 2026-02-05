@@ -348,7 +348,7 @@ def get_tools_prompt() -> str:
 2. Act immediately. Don't explain what you're going to do, just do it.
 3. Use tools directly without verbose descriptions.
 4. After task completion, give a ONE LINE summary only. Don't show file contents.
-5. Respond in Korean.
+5. Respond in the same language as the user. Default to Korean if unclear.
 6. For file writes and commands, just call the tool. User will confirm.
 
 ## Format

@@ -182,42 +182,75 @@ def add_to_path():
 
 def install_dependencies():
     """Python 패키지 설치"""
-    print("[4/4] Installing dependencies...")
-    print("  (This may take a few minutes for chromadb...)")
-    print()
+    print("[4/4] Installing dependencies...", flush=True)
+    print("  (This may take a few minutes for chromadb...)", flush=True)
+    print(flush=True)
 
     python_exe = get_python_executable()
-    print(f"  Using Python: {python_exe}")
+    print(f"  Using Python: {python_exe}", flush=True)
+
+    if not python_exe or python_exe == "python":
+        # Python을 못 찾으면 경고
+        print("  ! Could not find Python executable", flush=True)
+        print("  Make sure Python is installed and in PATH", flush=True)
+        print("  Manual: pip install click httpx rich chromadb", flush=True)
+        print(flush=True)
+        return
 
     req_file = INSTALL_DIR / "requirements.txt"
 
     if req_file.exists():
         try:
+            print("  Running pip install...", flush=True)
             # 실시간 출력 표시
-            subprocess.run(
-                [python_exe, "-m", "pip", "install", "-r", str(req_file)],
-                check=True
+            process = subprocess.Popen(
+                [python_exe, "-m", "pip", "install", "--progress-bar", "on", "-r", str(req_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
             )
-            print()
-            print("  + Dependencies installed")
-        except subprocess.CalledProcessError as e:
-            print(f"  ! pip install failed")
-            print(f"  Manual: pip install -r {req_file}")
+            # 실시간 출력
+            for line in process.stdout:
+                print(f"  {line.rstrip()}", flush=True)
+            process.wait()
+
+            if process.returncode == 0:
+                print()
+                print("  + Dependencies installed", flush=True)
+            else:
+                print(f"  ! pip install failed (exit code {process.returncode})", flush=True)
+                print(f"  Manual: pip install -r {req_file}", flush=True)
+        except Exception as e:
+            print(f"  ! pip install failed: {e}", flush=True)
+            print(f"  Manual: pip install -r {req_file}", flush=True)
     else:
         # 직접 설치
         packages = ["click", "httpx", "rich", "chromadb"]
         try:
-            subprocess.run(
-                [python_exe, "-m", "pip", "install"] + packages,
-                check=True
+            print("  Running pip install...", flush=True)
+            process = subprocess.Popen(
+                [python_exe, "-m", "pip", "install", "--progress-bar", "on"] + packages,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
             )
-            print()
-            print("  + Dependencies installed")
-        except:
-            print(f"  ! pip install failed")
-            print(f"  Manual: pip install {' '.join(packages)}")
+            for line in process.stdout:
+                print(f"  {line.rstrip()}", flush=True)
+            process.wait()
 
-    print()
+            if process.returncode == 0:
+                print()
+                print("  + Dependencies installed", flush=True)
+            else:
+                print(f"  ! pip install failed", flush=True)
+                print(f"  Manual: pip install {' '.join(packages)}", flush=True)
+        except Exception as e:
+            print(f"  ! pip install failed: {e}", flush=True)
+            print(f"  Manual: pip install {' '.join(packages)}", flush=True)
+
+    print(flush=True)
 
 
 def setup_config():
