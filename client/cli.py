@@ -9,6 +9,10 @@ from pathlib import Path
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import ANSI
+
 from config import (
     save_global_config,
     get_global_config,
@@ -28,6 +32,26 @@ console = Console()
 
 # 전역 중지 플래그
 stop_requested = False
+
+
+def create_multiline_prompt():
+    """멀티라인 입력을 위한 PromptSession 생성
+    - Enter: 제출
+    - Ctrl+J: 줄바꿈
+    """
+    bindings = KeyBindings()
+
+    @bindings.add('c-j')  # Ctrl+J
+    def _(event):
+        """Ctrl+J: 줄바꿈"""
+        event.current_buffer.insert_text('\n')
+
+    @bindings.add('escape', 'enter')  # Alt+Enter (some terminals)
+    def _(event):
+        """Alt+Enter: 줄바꿈"""
+        event.current_buffer.insert_text('\n')
+
+    return PromptSession(key_bindings=bindings)
 
 
 # 상태 업데이터 (백그라운드 스레드) - 터미널 제목 갱신
@@ -333,13 +357,17 @@ async def run_agent_chat(
     # 업데이트 알림 (모든 출력 후)
     show_update_notice()
 
+    console.print("[dim]Tip: Ctrl+J for newline[/dim]")
     console.print()
+
+    # 멀티라인 입력 세션 생성
+    prompt_session = create_multiline_prompt()
 
     while True:
         stop_requested = False
 
         try:
-            user_input = Prompt.ask("\n[bold cyan]You[/bold cyan]")
+            user_input = await prompt_session.prompt_async(ANSI("\n\033[1;36mYou:\033[0m "))
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Bye![/dim]")
             break
