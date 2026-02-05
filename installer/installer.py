@@ -130,7 +130,7 @@ python "{INSTALL_DIR}\\cli.py" %*
 
 def add_to_path():
     """환경변수 PATH에 추가"""
-    print("[3/4] Adding to PATH...")
+    print("[3/4] Adding to PATH...", flush=True)
 
     install_str = str(INSTALL_DIR)
 
@@ -152,7 +152,7 @@ def add_to_path():
 
         # 이미 있으면 스킵
         if install_str.lower() in current_path.lower():
-            print("  Already in PATH")
+            print("  Already in PATH", flush=True)
         else:
             # PATH에 추가
             if current_path:
@@ -161,23 +161,40 @@ def add_to_path():
                 new_path = install_str
 
             winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-            print(f"  + Added: {install_str}")
+            print(f"  + Added: {install_str}", flush=True)
 
         winreg.CloseKey(key)
 
-        # 환경변수 변경 알림 (브로드캐스트)
-        import ctypes
-        HWND_BROADCAST = 0xFFFF
-        WM_SETTINGCHANGE = 0x001A
-        ctypes.windll.user32.SendMessageW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment"
-        )
+        # 환경변수 변경 알림 (타임아웃 버전 사용)
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            SMTO_ABORTIFHUNG = 0x0002
+
+            SendMessageTimeoutW = ctypes.windll.user32.SendMessageTimeoutW
+            SendMessageTimeoutW.argtypes = [
+                wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                wintypes.LPCWSTR, wintypes.UINT, wintypes.UINT,
+                ctypes.POINTER(wintypes.DWORD)
+            ]
+            result = wintypes.DWORD()
+
+            # 1초 타임아웃으로 브로드캐스트
+            SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                "Environment", SMTO_ABORTIFHUNG, 1000, ctypes.byref(result)
+            )
+        except Exception:
+            pass  # 실패해도 무시 (새 터미널에서는 적용됨)
 
     except Exception as e:
-        print(f"  ! Failed to add to PATH: {e}")
-        print(f"  Manual: Add '{install_str}' to your PATH")
+        print(f"  ! Failed to add to PATH: {e}", flush=True)
+        print(f"  Manual: Add '{install_str}' to your PATH", flush=True)
 
-    print()
+    print(flush=True)
 
 
 def install_dependencies():
